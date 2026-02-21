@@ -1,0 +1,33 @@
+; PIO State Machine for Composite Sync to V-Sync Separator
+; 複合同期信号から垂直同期信号を分離するPIOステートマシン
+;
+; 入力: 複合同期信号 (C-Sync)
+; 出力: パルス幅をFIFOに送信（CPU側で解析）
+
+.program csync_measure
+
+; 定期サンプリング方式 - 指定ピンのみ読み取り
+.wrap_target
+    ; 指定したGPIOピン1本のみを読み取り
+    in pins, 1          ; 1ビットだけ読み取り（in_base指定のピン）
+    push noblock        ; すぐに送信
+.wrap
+
+% c-sdk {
+static inline void csync_measure_program_init(PIO pio, uint sm, uint offset, uint pin) {
+    pio_sm_config c = csync_measure_program_get_default_config(offset);
+    
+    // 入力ピン設定（GP28のみ）
+    sm_config_set_in_pins(&c, pin);
+    
+    // シフト方向設定（1ビットだけ右シフト）
+    sm_config_set_in_shift(&c, false, false, 32);
+    
+    // クロック設定 (125MHz → 1MHz = 1μs分解能)
+    sm_config_set_clkdiv(&c, 125.0f);
+    
+    // ステートマシン初期化と有効化
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"cstdint": "c"
+		}
+	},
+	"extensions": {
+		"recommendations": [
+			"twxs.cmake"
+		]
+	}
+}
