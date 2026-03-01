@@ -1125,7 +1125,13 @@ void LoadButtonConfig() {
         if (mode > GR_BTN_MODE_RAPID_FIXED || mode == 0xFF) {
             GR_Btn_Config[i] = GR_Btn_Default[i];
         } else {
-            if (gpio_pin > 28 || gpio_pin == 0xFF) gpio_pin = GR_Btn_Default[i].gpio;
+            // 99はRESET(GP28)の特殊値、28は旧フォーマット互換
+            if (gpio_pin == 99 || gpio_pin == 28) {
+                gpio_pin = 28;  // 実際のGPIO番号に変換
+            } else if (gpio_pin != 27 && gpio_pin != 18 &&
+                       gpio_pin != 17 && gpio_pin != 16) {
+                gpio_pin = GR_Btn_Default[i].gpio;
+            }
             if (rapid_off == 0 || rapid_off > 6 || rapid_off == 0xFF) rapid_off = 1;
             GR_Btn_Config[i].mode      = mode;
             GR_Btn_Config[i].gpio      = gpio_pin;

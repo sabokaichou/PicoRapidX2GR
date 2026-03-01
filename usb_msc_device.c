@@ -55,19 +55,20 @@ static const char* gpio_to_output_label(uint8_t g) {
     if (g == 18) return "A";
     if (g == 17) return "B";
     if (g == 16) return "C";
-    if (g == 28) return "RESET";
     if (g == 27) return "START";
+    if (g == 99 || g == 28) return "RESET";  // 99=新形式, 28=旧形式互務
     return "A"; // フォールバック
 }
 
 // OUTPUTラベル文字列 → GPIO番号 (不明なら0xFF=デフォルト使用)
+// RESETは特殊値 99 として保存 (実際GPIO 28への変換はLoadButtonConfigで行う)
 static uint8_t output_label_to_gpio(const char *label) {
     if (label[0] == 'A' || label[0] == 'a') return 18;
     if (label[0] == 'B' || label[0] == 'b') return 17;
     if (label[0] == 'C' || label[0] == 'c') return 16;
     // RESET / reset
     if ((label[0] == 'R' || label[0] == 'r') &&
-        (label[1] == 'E' || label[1] == 'e')) return 28;
+        (label[1] == 'E' || label[1] == 'e')) return 99;
     // START / start
     if ((label[0] == 'S' || label[0] == 's') &&
         (label[1] == 'T' || label[1] == 't')) return 27;
@@ -251,7 +252,7 @@ static void build_fat12_image(void) {
     pos += snprintf(text + pos, DISK_SECTOR_SIZE - pos,
         "# PicoRapidX2GR Button Configuration\r\n"
         "# INPUT : A=TOP_L  B=TOP_M  C=TOP_R  D=BTM_L  E=BTM_M  F=BTM_R\r\n"
-        "# OUTPUT: A=GP18   B=GP17   C=GP16   RESET=GP28  START=GP27\r\n"
+        "# OUTPUT: A, B, C, START, RESET\r\n"
         "# MODE  : 0=DISABLED  1=HOLD  2=RAPID_ROTARY  3=RAPID_FIXED\r\n"
         "# RAPID : 1=8.6/s  2=10/s  3=12/s  4=15/s  5=20/s  6=30/s\r\n"
         "#         (RAPID_ROTARY uses rotary switch, RAPID field ignored)\r\n"
@@ -395,8 +396,15 @@ static void parse_settings_csv_n(const char *csv_data, size_t csv_len) {
         if (field_count < 3 || !fields[0] || !fields[1] || !fields[2]) continue;
 
         // OUTPUT ラベル → GPIO番号
+        // (RESET=99, START=27, A=18, B=17, C=16)
         uint8_t gpio_pin = output_label_to_gpio(fields[0]);
         if (gpio_pin == 0xFF) gpio_pin = btn_default[slot].gpio; // 不明はデフォルト
+        // 合法値チェック: 99(RESET), 27(START), 28(RESET旧), 16/17/18(A/B/C)
+        if (gpio_pin != 99 && gpio_pin != 28 &&
+            gpio_pin != 27 && gpio_pin != 18 &&
+            gpio_pin != 17 && gpio_pin != 16) {
+            gpio_pin = btn_default[slot].gpio;
+        }
 
         // MODE (0-3)
         int mode = atoi(fields[1]);
