@@ -9,8 +9,15 @@
 #include <pico/platform.h>
 #include <pico/stdlib.h>
 
-// PicoRapidX2GR専用 IO設定アドレス
-#define FLASH_ADDR_IO_SETTING  0x1C1000
+// PicoRapidX2GR専用 フラッシュアドレス
+#define FLASH_ADDR_IO_SETTING   0x1C1000  // (旧来、GRでは非使用)
+#define FLASH_ADDR_BTN_SETTING  0x1C3000  // GRボタン設定
+
+// GRボタンモード定義 (PicoRapidX2GR.c と同じ値)
+#define _GR_BTN_MODE_DISABLED     0
+#define _GR_BTN_MODE_HOLD         1
+#define _GR_BTN_MODE_RAPID_ROTARY 2
+#define _GR_BTN_MODE_RAPID_FIXED  3
 
 // Setting.txt のみの簡素なFAT12ディスク
 // セクタ構成:
@@ -43,23 +50,26 @@ static bool     s_led_manual_state         = false;
 static bool     s_led_suppress_until_write = true;
 
 // ---- Validation and deletion helpers --------------------------------------
+// GR button config header check: "SLOT,MODE,GPIO,RAPID_OFF" が含まれること
 static bool has_expected_header_n(const char *data, size_t len) {
     if (!data || len == 0) return false;
-    const char *needle1 = "Format: INPUT_NO,RAPID_TYPE,REVERSE,OUT_FRAME,IN_FRAME,OUTPUT_PINS";
-    const char *needle2 = "RAPID: 1=Norm 2=R30 3=R30Rev 4=Custom 5=Macro 6=R15 7=R15Rev";
-    size_t n1 = strlen(needle1), n2 = strlen(needle2);
-    bool f1 = false, f2 = false;
-    for (size_t i = 0; i + n1 <= len; i++) { if (memcmp(data + i, needle1, n1) == 0) { f1 = true; break; } }
-    for (size_t i = 0; i + n2 <= len; i++) { if (memcmp(data + i, needle2, n2) == 0) { f2 = true; break; } }
-    return f1 && f2;
+    const char *needle = "SLOT,MODE,GPIO,RAPID_OFF";
+    size_t n = strlen(needle);
+    for (size_t i = 0; i + n <= len; i++) {
+        if (memcmp(data + i, needle, n) == 0) return true;
+    }
+    return false;
 }
 
+// GR button config データ行の検証:
+//   - 先頭が '0'〜'5' の数字
+//   - カンマ区切り4フィールド (SLOT,MODE,GPIO,RAPID_OFF)
 static bool validate_settings_lines_n(const char *data, size_t len) {
     if (!data || len == 0) return false;
     const char *p = data;
     const char *end = data + len;
     int valid_rows = 0;
-    for (int line = 0; line < 64 && p < end; line++) {
+    for (int line = 0; line < 32 && p < end; line++) {
         const char *line_start = p;
         while (p < end && *p != '\n' && *p != '\r') p++;
         const char *line_end = p;
@@ -68,26 +78,18 @@ static bool validate_settings_lines_n(const char *data, size_t len) {
         // trim
         while (line_start < line_end && (*line_start == ' ' || *line_start == '\t')) line_start++;
         while (line_end > line_start && (line_end[-1] == ' ' || line_end[-1] == '\t')) line_end--;
-        if (line_start >= line_end) continue; // empty
+        if (line_start >= line_end) continue;
 
-        // non-data lines (headers/comments) are skipped
-        if (!(line_start[0] >= '0' && line_start[0] <= '9')) continue;
+        // '#' で始まる行はコメント
+        if (line_start[0] == '#') continue;
 
-        int commas = 0; for (const char *q = line_start; q < line_end; ++q) if (*q == ',') commas++;
-        if (commas < 5) return false; // data line must have 5 commas
+        // データ行は '0'〜'5' で始まる
+        if (line_start[0] < '0' || line_start[0] > '5') continue;
 
-        // check last field has 12 binary digits (ignore spaces/tabs)
-        const char *last_comma = NULL;
-        for (const char *q = line_start; q < line_end; ++q) if (*q == ',') last_comma = q;
-        if (!last_comma) return false;
-        int digits = 0;
-        for (const char *q = last_comma + 1; q < line_end; ++q) {
-            if (*q == '0' || *q == '1') digits++;
-            else if (*q == ' ' || *q == '\t') {/* skip */}
-            else return false;
-            if (digits > 12) return false; // too many
-        }
-        if (digits != 12) return false;
+        // コンマが3つあること (4フィールド)
+        int commas = 0;
+        for (const char *q = line_start; q < line_end; ++q) if (*q == ',') commas++;
+        if (commas != 3) return false;
         valid_rows++;
     }
     return valid_rows > 0;
@@ -198,34 +200,52 @@ static void build_fat12_image(void) {
     root[11] = 0x20;
     uint16_t sc = 2; memcpy(root + 26, &sc, 2);
 
-    // ---- Setting.txt データ (セクタ4) ----
+    // ---- Setting.txt データ (セクタ4) / GRボタン設定 ----
     char *text = (char *)(ram_disk + DISK_SECTOR_SIZE * DATA_START_SECTOR);
     memset(text, 0, DISK_SECTOR_SIZE);
-
-    const uint8_t *flash_ptr = (const uint8_t *)(XIP_BASE + FLASH_ADDR_IO_SETTING);
     int pos = 0;
 
-    const char *header =
-        "Format: INPUT_NO,RAPID_TYPE,REVERSE,OUT_FRAME,IN_FRAME,OUTPUT_PINS(0:OFF 1:ON)\r\n"
-        "RAPID: 1=Norm 2=R30 3=R30Rev 4=Custom 5=Macro 6=R15 7=R15Rev\r\n"
-        "\r\n";
-    int hlen = strlen(header);
-    memcpy(text + pos, header, hlen); pos += hlen;
+    // デフォルト値テーブル (LoadButtonConfig と同じ)
+    static const struct { uint8_t mode; uint8_t gpio; uint8_t rapid_off; } btn_default[6] = {
+        {_GR_BTN_MODE_HOLD,         18, 1},
+        {_GR_BTN_MODE_HOLD,         17, 1},
+        {_GR_BTN_MODE_HOLD,         16, 1},
+        {_GR_BTN_MODE_RAPID_ROTARY, 18, 1},
+        {_GR_BTN_MODE_HOLD,         17, 1},
+        {_GR_BTN_MODE_HOLD,         16, 1},
+    };
+    const char *slot_names[6] = {
+        "TOP_L", "TOP_M", "TOP_R", "BTM_L", "BTM_M", "BTM_R"
+    };
+    // フラッシュから現在の設定を読む
+    const uint8_t *fp = (const uint8_t *)(XIP_BASE + FLASH_ADDR_BTN_SETTING);
 
-    for (int input = 0; input < 12 && pos < DISK_SECTOR_SIZE - 30; input++) {
-        int base = input * 16;
-        uint8_t rt = flash_ptr[base];
-        bool rev = (rt >= 10);
-        if (rev) rt -= 10;
-        int w = snprintf(text + pos, DISK_SECTOR_SIZE - pos,
-            "%d,%d,%d,%d,%d,", input, rt, rev ? 1 : 0,
-            flash_ptr[base + 1], flash_ptr[base + 2]);
-        if (w < 0) break;
-        pos += w;
-        for (int pin = 0; pin < 12 && pos < DISK_SECTOR_SIZE - 3; pin++) {
-            text[pos++] = '0' + flash_ptr[base + 4 + pin];
+    // ヘッダコメント
+    pos += snprintf(text + pos, DISK_SECTOR_SIZE - pos,
+        "# PicoRapidX2GR Button Configuration\r\n"
+        "# SLOT: 0=TOP_L  1=TOP_M  2=TOP_R  3=BTM_L  4=BTM_M  5=BTM_R\r\n"
+        "# MODE: 0=DISABLED  1=HOLD  2=RAPID_ROTARY  3=RAPID_FIXED\r\n"
+        "# GPIO: output GPIO number (0-28)\r\n"
+        "# RAPID_OFF: off-frames for RAPID_FIXED mode (1-6)\r\n"
+        "# SLOT,MODE,GPIO,RAPID_OFF\r\n"
+        "#\r\n");
+
+    for (int i = 0; i < 6 && pos < DISK_SECTOR_SIZE - 40; i++) {
+        uint8_t mode      = fp[i * 3 + 0];
+        uint8_t gpio_pin  = fp[i * 3 + 1];
+        uint8_t rapid_off = fp[i * 3 + 2];
+        // 未初期化(0xFF)はデフォルト値を使用
+        if (mode > _GR_BTN_MODE_RAPID_FIXED || mode == 0xFF) {
+            mode      = btn_default[i].mode;
+            gpio_pin  = btn_default[i].gpio;
+            rapid_off = btn_default[i].rapid_off;
+        } else {
+            if (gpio_pin > 28  || gpio_pin  == 0xFF) gpio_pin  = btn_default[i].gpio;
+            if (rapid_off == 0 || rapid_off  > 6 || rapid_off == 0xFF) rapid_off = 1;
         }
-        if (pos < DISK_SECTOR_SIZE - 2) { text[pos++] = '\r'; text[pos++] = '\n'; }
+        pos += snprintf(text + pos, DISK_SECTOR_SIZE - pos,
+            "%d,%d,%d,%d  # %s\r\n",
+            i, mode, gpio_pin, rapid_off, slot_names[i]);
     }
 
     uint32_t fsize = (uint32_t)pos;
@@ -261,11 +281,24 @@ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void *buff
     return (int32_t) bufsize;
 }
 
-// CSVファイルをパースして設定に反映する
+// GRボタン設定CSVをパースしてフラッシュに書き込む
+// 形式: SLOT,MODE,GPIO,RAPID_OFF  (行末の #コメントは無視)
 static void parse_settings_csv_n(const char *csv_data, size_t csv_len) {
-    uint8_t new_settings[256];
-    const uint8_t *flash_ptr = (const uint8_t *)(XIP_BASE + FLASH_ADDR_IO_SETTING);
-    memcpy(new_settings, flash_ptr, 256);
+    // デフォルト値テーブル
+    static const struct { uint8_t mode; uint8_t gpio; uint8_t rapid_off; } btn_default[6] = {
+        {_GR_BTN_MODE_HOLD,         18, 1},
+        {_GR_BTN_MODE_HOLD,         17, 1},
+        {_GR_BTN_MODE_HOLD,         16, 1},
+        {_GR_BTN_MODE_RAPID_ROTARY, 18, 1},
+        {_GR_BTN_MODE_HOLD,         17, 1},
+        {_GR_BTN_MODE_HOLD,         16, 1},
+    };
+
+    // 現在のフラッシュ内容をベースにし、書き込み済みスロットだけ上書き
+    uint8_t new_settings[FLASH_PAGE_SIZE];
+    memset(new_settings, 0xFF, sizeof(new_settings));
+    const uint8_t *fp = (const uint8_t *)(XIP_BASE + FLASH_ADDR_BTN_SETTING);
+    memcpy(new_settings, fp, 18);  // 既存の18バイトをコピー
 
     const char *p = csv_data;
     const char *end = csv_data + csv_len;
@@ -279,71 +312,63 @@ static void parse_settings_csv_n(const char *csv_data, size_t csv_len) {
         // trim
         while (line_start < line_end && (*line_start == ' ' || *line_start == '\t')) line_start++;
         while (line_end > line_start && (line_end[-1] == ' ' || line_end[-1] == '\t')) line_end--;
-        if (line_start >= line_end) continue; // empty
-        if (!(line_start[0] >= '0' && line_start[0] <= '9')) continue; // only data lines
+        if (line_start >= line_end) continue;
 
-        size_t len = (size_t)(line_end - line_start);
-        char buf[160];
-        if (len >= sizeof(buf)) len = sizeof(buf) - 1;
-        memcpy(buf, line_start, len);
-        buf[len] = '\0';
+        // '#' コメント行・空行をスキップ
+        if (line_start[0] == '#') continue;
+        if (line_start[0] < '0' || line_start[0] > '5') continue;
 
-        // split first 5 numeric fields
-        int values[5] = {0};
+        // バッファにコピーし '#' 以降を切り捨て
+        size_t line_len = (size_t)(line_end - line_start);
+        char buf[64];
+        if (line_len >= sizeof(buf)) line_len = sizeof(buf) - 1;
+        memcpy(buf, line_start, line_len);
+        buf[line_len] = '\0';
+        for (int k = 0; buf[k]; k++) { if (buf[k] == '#') { buf[k] = '\0'; break; } }
+
+        // SLOT,MODE,GPIO,RAPID_OFF の4フィールドをパース
+        int values[4] = {-1, -1, -1, -1};
         int value_count = 0;
         char *s = buf;
         char *field = s;
-        for (size_t i = 0; s[i] != '\0'; ++i) {
-            if (s[i] == ',') {
-                s[i] = '\0';
-                // trim field
+        for (int k = 0; s[k] != '\0' && value_count < 4; k++) {
+            if (s[k] == ',') {
+                s[k] = '\0';
                 char *f = field; while (*f == ' ' || *f == '\t') f++;
                 values[value_count++] = atoi(f);
-                field = &s[i + 1];
-                if (value_count == 5) break;
+                field = &s[k + 1];
             }
         }
-        if (value_count < 5) continue;
-
-        // remaining is pins
-        char *pins = field;
-        int input_no = values[0];
-        if (input_no < 0 || input_no >= 12) continue;
-        int base = input_no * 16;
-
-        int rapid_type = values[1];
-        int reverse = values[2];
-        new_settings[base] = (uint8_t)(rapid_type + (reverse ? 10 : 0));
-        new_settings[base + 1] = (uint8_t)values[3];
-        new_settings[base + 2] = (uint8_t)values[4];
-        if (rapid_type == 5) {
-            new_settings[base + 3] = (uint8_t)input_no; // Macro: CMD=自分の番号
+        // 最後のフィールド
+        if (value_count < 4) {
+            char *f = field; while (*f == ' ' || *f == '\t') f++;
+            values[value_count++] = atoi(f);
         }
+        if (value_count < 4) continue;
 
-        int filled = 0;
-        for (char *q = pins; *q != '\0' && filled < 12; ++q) {
-            if (*q == '0' || *q == '1') {
-                new_settings[base + 4 + filled] = (*q == '1') ? 1 : 0;
-                filled++;
-            } else if (*q == ' ' || *q == '\t') {
-                // skip
-            } else {
-                break;
-            }
-        }
-        if (filled != 12) continue; // 不完全行は適用しない
+        int slot      = values[0];
+        int mode      = values[1];
+        int gpio_pin  = values[2];
+        int rapid_off = values[3];
+
+        // 範囲チェック
+        if (slot < 0 || slot > 5) continue;
+        if (mode < 0 || mode > 3) mode = (int)btn_default[slot].mode;
+        if (gpio_pin < 0 || gpio_pin > 28) gpio_pin = (int)btn_default[slot].gpio;
+        if (rapid_off < 1 || rapid_off > 6) rapid_off = 1;
+
+        new_settings[slot * 3 + 0] = (uint8_t)mode;
+        new_settings[slot * 3 + 1] = (uint8_t)gpio_pin;
+        new_settings[slot * 3 + 2] = (uint8_t)rapid_off;
     }
 
     uint32_t ints = save_and_disable_interrupts();
-    flash_range_erase(FLASH_ADDR_IO_SETTING, FLASH_SECTOR_SIZE);
-    flash_range_program(FLASH_ADDR_IO_SETTING, new_settings, FLASH_PAGE_SIZE);
+    flash_range_erase(FLASH_ADDR_BTN_SETTING, FLASH_SECTOR_SIZE);
+    flash_range_program(FLASH_ADDR_BTN_SETTING, new_settings, FLASH_PAGE_SIZE);
     restore_interrupts(ints);
-    
-    // フラッシュ書込み後に同期処理（重要）
-    __dsb(); // データ同期バリア
-    __isb(); // 命令同期バリア
-    
-    // 少し待機してフラッシュ書込み完了を確実に
+
+    __dsb();
+    __isb();
     sleep_us(1000);
 }
 
