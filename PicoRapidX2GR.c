@@ -906,8 +906,17 @@ static inline void gr_output_set(uint8_t gpio_val, bool on) {
 
 // STARTマクロ (GR_GPIO_MACRO_START=100)
 static const MacroStep GR_MacroSeq_Start[] = {
-    MSTEP_OUT(MOUT_START),  // START 1フレーム
-    MSTEP_WAIT(3),          // 3フレーム待機
+    MSTEP_HOLD(MOUT_UP,    2), MSTEP_WAIT(2),  // ↑
+    MSTEP_HOLD(MOUT_UP,    2), MSTEP_WAIT(2),  // ↑
+    MSTEP_HOLD(MOUT_DOWN,  2), MSTEP_WAIT(2),  // ↓
+    MSTEP_HOLD(MOUT_DOWN,  2), MSTEP_WAIT(2),  // ↓
+    MSTEP_HOLD(MOUT_LEFT,  2), MSTEP_WAIT(2),  // ←
+    MSTEP_HOLD(MOUT_RIGHT, 2), MSTEP_WAIT(2),  // →
+    MSTEP_HOLD(MOUT_LEFT,  2), MSTEP_WAIT(2),  // ←
+    MSTEP_HOLD(MOUT_RIGHT, 2), MSTEP_WAIT(2),  // →
+    MSTEP_HOLD(MOUT_A,     2), MSTEP_WAIT(2),  // A
+    MSTEP_HOLD(MOUT_B,     2), MSTEP_WAIT(2),  // B
+    MSTEP_HOLD(MOUT_C,     2),                 // C
     MSTEP_END,
 };
 
