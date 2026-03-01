@@ -930,8 +930,26 @@ static const MacroStep GR_MacroSeq_Reset[] = {
 
 // RESET+STARTマクロ (GR_GPIO_MACRO_RESETSTART=102)
 static const MacroStep GR_MacroSeq_ResetStart[] = {
-    MSTEP_HOLD(MOUT_RESET | MOUT_START, 3),  // RESET+START 同時押下 3フレーム
-    MSTEP_WAIT(3),                           // 3フレーム待機
+    // --- RESET シーケンス ---
+    MSTEP_OUT(MOUT_RESET),               // Frame 1: GP28(RESET) ON
+    MSTEP_WAIT(1),                       // Frame 2: 待機
+    MSTEP_OUT(MOUT_A | MOUT_B | MOUT_C), // Frame 3: A/B/C ON
+    // --- 2700フレーム待機 (255×10 + 150) ---
+    MSTEP_WAIT(255), MSTEP_WAIT(255), MSTEP_WAIT(255), MSTEP_WAIT(255), MSTEP_WAIT(255),
+    MSTEP_WAIT(255), MSTEP_WAIT(255), MSTEP_WAIT(255), MSTEP_WAIT(255), MSTEP_WAIT(255),
+    MSTEP_WAIT(150),
+    // --- START シーケンス (コナミコマンド) ---
+    MSTEP_HOLD(MOUT_UP,    2), MSTEP_WAIT(2),  // ↑
+    MSTEP_HOLD(MOUT_UP,    2), MSTEP_WAIT(2),  // ↑
+    MSTEP_HOLD(MOUT_DOWN,  2), MSTEP_WAIT(2),  // ↓
+    MSTEP_HOLD(MOUT_DOWN,  2), MSTEP_WAIT(2),  // ↓
+    MSTEP_HOLD(MOUT_LEFT,  2), MSTEP_WAIT(2),  // ←
+    MSTEP_HOLD(MOUT_RIGHT, 2), MSTEP_WAIT(2),  // →
+    MSTEP_HOLD(MOUT_LEFT,  2), MSTEP_WAIT(2),  // ←
+    MSTEP_HOLD(MOUT_RIGHT, 2), MSTEP_WAIT(2),  // →
+    MSTEP_HOLD(MOUT_A,     2), MSTEP_WAIT(2),  // A
+    MSTEP_HOLD(MOUT_B,     2), MSTEP_WAIT(2),  // B
+    MSTEP_HOLD(MOUT_C,     2),                 // C
     MSTEP_END,
 };
 
