@@ -137,6 +137,70 @@ const int8_t Input_Pin_B[]  = {19, 20, 12, 13, 14, 15, 16, 17, 18, 21, 22, 26};
 // INDEX: 0=リセット 1=スタート 2=上 3=下 4=左(JAMMA) 5=右 6=A 7=B 8=C
 const int8_t Output_Pin_GR[] = {28, 27, 26, 22, 21, 20, 18, 17, 16};
 
+// PicoRapidX2GR 入力ピン定義
+#define GR_PIN_TOP_L  4   // 上段左  (スイッチOFF時=A, ON時=D)
+#define GR_PIN_TOP_M  5   // 上段中  (スイッチOFF時=B, ON時=E)
+#define GR_PIN_TOP_R  6   // 上段右  (スイッチOFF時=C, ON時=F)
+#define GR_PIN_BTM_L  13  // 下段左  (スイッチOFF時=D, ON時=A)
+#define GR_PIN_BTM_M  14  // 下段中  (スイッチOFF時=E, ON時=B)
+#define GR_PIN_BTM_R  15  // 下段右  (スイッチOFF時=F, ON時=C)
+#define GR_PIN_SWAP   1   // 上下切替スイッチ (LOW=ON=スワップ)
+#define GR_PIN_RESET  0   // リセットボタン (1秒長押しで動作)
+#define GR_PIN_ROT1   7   // ロータリー位置1 (8.6/s: on1/off6)
+#define GR_PIN_ROT2   8   // ロータリー位置2 (10/s:  on1/off5)
+#define GR_PIN_ROT3   9   // ロータリー位置3 (12/s:  on1/off4)
+#define GR_PIN_ROT4   10  // ロータリー位置4 (15/s:  on1/off3)
+#define GR_PIN_ROT5   11  // ロータリー位置5 (20/s:  on1/off2)
+#define GR_PIN_ROT6   12  // ロータリー位置6 (30/s:  on1/off1)
+
+// 出力インデックス定義
+#define GR_OUT_RESET  0
+#define GR_OUT_START  1
+#define GR_OUT_UP     2
+#define GR_OUT_DOWN   3
+#define GR_OUT_LEFT   4
+#define GR_OUT_RIGHT  5
+#define GR_OUT_A      6
+#define GR_OUT_B      7
+#define GR_OUT_C      8
+
+// ロータリースイッチの連射OFFフレーム数 [位置0-5]
+static const uint8_t GR_RapidOffFrames[6] = {6, 5, 4, 3, 2, 1};
+
+// リセット長押し判定フレーム数 (約1秒 = 60フレーム)
+#define GR_RESET_HOLD_FRAMES 60
+
+// GRボタン動作モード定義
+#define GR_BTN_MODE_DISABLED      0  // 無効
+#define GR_BTN_MODE_HOLD          1  // 単純ホールド
+#define GR_BTN_MODE_RAPID_ROTARY  2  // 連射(ロータリー速度使用)
+#define GR_BTN_MODE_RAPID_FIXED   3  // 連射(固定速度)
+
+// ボタン設定構造体
+// フラッシュ(0x1C3000)レイアウト (18バイト):
+//   [0..2]  : スロット0 = TOP_L (mode, gpio, rapid_off)
+//   [3..5]  : スロット1 = TOP_M
+//   [6..8]  : スロット2 = TOP_R
+//   [9..11] : スロット3 = BTM_L
+//   [12..14]: スロット4 = BTM_M
+//   [15..17]: スロット5 = BTM_R
+// デフォルト (未初期化=0xFF の場合):
+//   slot0=HOLD/GP18, slot1=HOLD/GP17, slot2=HOLD/GP16
+//   slot3=RAPID_ROTARY/GP18, slot4=HOLD/GP17, slot5=HOLD/GP16
+typedef struct {
+    uint8_t mode;       // GR_BTN_MODE_*
+    uint8_t gpio;       // 出力先GPIO番号 (0-28)
+    uint8_t rapid_off;  // OFFフレーム数 (1-6, RAPID_FIXED時のみ使用)
+} GR_ButtonConfig;
+
+GR_ButtonConfig GR_Btn_Config[6];  // [0]=TOP_L [1]=TOP_M [2]=TOP_R [3]=BTM_L [4]=BTM_M [5]=BTM_R
+
+// GR入力状態 (スワップ適用後の論理スロット単位)
+static bool     GR_BtnState[6] = {false};  // [0..5] 各スロットの押下状態
+static uint32_t GR_ResetFrameCount = 0;
+static uint8_t  GR_CurrentRapidOff = 0;    // 現在のOFFフレーム数 (0=連射なし)
+static uint8_t  GR_RapidCnt[6] = {0};      // 各スロットの連射カウンタ
+
 // GPIO関連(設定)
 bool SettingMode = false;
 #define LED_PIN 25 // 標準LED
@@ -238,11 +302,13 @@ unsigned char DispPanel[9] = {'0', '0', '0', '0', '0', '0', '0', '0', '0'};
 // 0x1C0000: VSyncSeparator設定 (他プロジェクト)
 // 0x1C1000: PicoRapidX2GR IO設定 (専用)
 // 0x1C2000: PicoRapidX2GR ボード設定 (専用)
+// 0x1C3000: PicoRapidX2GR EF設定 (専用)
 // 0x1D0000: IO_Board (PicoRapidX/PicoRapidX2 共用)
 // 0x1E0000-0x1EF000: Macro 0-15 (全プロジェクト共用)
 // 0x1F0000: IO_Setting (PicoRapidX/PicoRapidX2 共用)
 const uint32_t FLASH_TARGET_OFFSET_IO_Setting = 0x1C1000;
-const uint32_t FLASH_TARGET_OFFSET_IO_Board = 0x1C2000;
+const uint32_t FLASH_TARGET_OFFSET_IO_Board   = 0x1C2000;
+const uint32_t FLASH_TARGET_OFFSET_EF_Setting = 0x1C3000;
 uint8_t g_read_io_data[FLASH_PAGE_SIZE];
 uint8_t g_save_io_data[FLASH_PAGE_SIZE];
 uint8_t g_read_macro_data[FLASH_PAGE_SIZE];
@@ -339,6 +405,11 @@ void SetIOSetting();
 void SetCommandData(int InputNo);
 void GetInput();
 void InputExecute();
+void GetInput_GR();
+void InputExecute_GR();
+static void ProcessButton_GR(int slot, bool pressed, uint8_t *counter);
+void LoadButtonConfig();
+void SaveButtonConfig();
 void InputNormal(int InputNo);
 void InputCommand(int InputNo);
 void load_io_setting_from_flash(uint32_t load_address, uint8_t *read_data);
@@ -498,27 +569,47 @@ void InitGPIO() {
     gpio_set_function(27, GPIO_FUNC_SIO);  // GP27: スタート (出力)
     gpio_set_function(28, GPIO_FUNC_SIO);  // GP28: リセット (出力)
 
-    // 出力ピンを個別に初期化 (-1は未使用のためスキップ)
+    // 出力ピンを個別に初期化
     for (int i = 0; i < IOCount; i++) {
-        if (Output_Pin[i] < 0) continue;
-        gpio_init(Output_Pin[i]);
-        gpio_set_dir(Output_Pin[i], GPIO_OUT);
-        gpio_set_drive_strength(Output_Pin[i], GPIO_DRIVE_STRENGTH_2MA);
+        gpio_init(Output_Pin_GR[i]);
+        gpio_set_dir(Output_Pin_GR[i], GPIO_OUT);
+        gpio_put(Output_Pin_GR[i], 0);
+        gpio_set_drive_strength(Output_Pin_GR[i], GPIO_DRIVE_STRENGTH_2MA);
     }
 
-    // 入力ピンを個別に初期化
-    for (int i = 0; i < IOCount; i++) {
-        gpio_init(Input_Pin[i]);
-        gpio_set_dir(Input_Pin[i], GPIO_IN);
-        gpio_set_drive_strength(Input_Pin[i], GPIO_DRIVE_STRENGTH_2MA);
-        gpio_pull_up(Input_Pin[i]);
+    // GRボタン入力ピン初期化 (プルアップ)
+    const uint8_t gr_btn_pins[] = {
+        GR_PIN_TOP_L, GR_PIN_TOP_M, GR_PIN_TOP_R,
+        GR_PIN_BTM_L, GR_PIN_BTM_M, GR_PIN_BTM_R,
+        GR_PIN_SWAP, GR_PIN_RESET
+    };
+    for (int i = 0; i < 8; i++) {
+        gpio_init(gr_btn_pins[i]);
+        gpio_set_dir(gr_btn_pins[i], GPIO_IN);
+        gpio_pull_up(gr_btn_pins[i]);
     }
 
-    // ModeSW/EnterSWのIRQ設定はUSB接続モード時のみ行う (main()内で実施)
+    // ロータリースイッチピン初期化 (プルアップ)
+    for (int p = GR_PIN_ROT1; p <= GR_PIN_ROT6; p++) {
+        gpio_init(p);
+        gpio_set_dir(p, GPIO_IN);
+        gpio_pull_up(p);
+    }
 
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_set_drive_strength(LED_PIN, GPIO_DRIVE_STRENGTH_2MA);
+
+    // ボタン設定をフラッシュから読み込み、対応出力GPIOを初期化
+    LoadButtonConfig();
+    for (int i = 0; i < 6; i++) {
+        if (GR_Btn_Config[i].mode != GR_BTN_MODE_DISABLED) {
+            gpio_init(GR_Btn_Config[i].gpio);
+            gpio_set_dir(GR_Btn_Config[i].gpio, GPIO_OUT);
+            gpio_put(GR_Btn_Config[i].gpio, 0);
+            gpio_set_drive_strength(GR_Btn_Config[i].gpio, GPIO_DRIVE_STRENGTH_2MA);
+        }
+    }
 }
 
 // VSync検出コールバック
@@ -527,10 +618,10 @@ static void vsync_callback(void) {
     static bool led_state = false;
     led_state = !led_state;
     gpio_put(LED_PIN, led_state);
-    
-    // 入力状態を取得してから処理実行
-    GetInput();
-    InputExecute();
+
+    // GR入力取得 → 出力処理
+    GetInput_GR();
+    InputExecute_GR();
 }
 
 // 同期信号入力ピン初期化
@@ -690,20 +781,122 @@ void SetCommandData(int InputNo) {
     //if (LastFrameCount[7] == 3) gpio_put(LED_PIN, GPIO_OUT);
 }
 
-// ボタンの状態を取得
+// ボタンの状態を取得 (旧実装: 設定モード用)
 void GetInput() {
     int32_t InputValue = gpio_get_all();
     for (int i = 0; i < IOCount; i++) {
         InputStatus[i] = (((InputValue >> Input_Pin[i]) & 1) == 0) ? true : false;
         if (IOSetting[i].Reverse == true) InputStatus[i] = !InputStatus[i];
     }
-
-    // 入力確認はここのコメントを外す    
-    // gpio_put(LED_PIN, InputStatus[0]);
-
 }
 
-// 同期信号入力発生時の処理
+// GR専用入力取得
+// スワップスイッチの状態に応じて物理ボタンをスロット0-5に割り当てる
+// スワップOFF: TOP_L→slot0, TOP_M→slot1, TOP_R→slot2, BTM_L→slot3, BTM_M→slot4, BTM_R→slot5
+// スワップON:  BTM_L→slot0, BTM_M→slot1, BTM_R→slot2, TOP_L→slot3, TOP_M→slot4, TOP_R→slot5
+void GetInput_GR() {
+    uint32_t val = gpio_get_all();
+
+    // 物理ボタンの状態を読み取る (LOW=押下)
+    bool top_l = ((val >> GR_PIN_TOP_L) & 1) == 0;
+    bool top_m = ((val >> GR_PIN_TOP_M) & 1) == 0;
+    bool top_r = ((val >> GR_PIN_TOP_R) & 1) == 0;
+    bool btm_l = ((val >> GR_PIN_BTM_L) & 1) == 0;
+    bool btm_m = ((val >> GR_PIN_BTM_M) & 1) == 0;
+    bool btm_r = ((val >> GR_PIN_BTM_R) & 1) == 0;
+
+    // 上下切替スイッチ (LOW=ON=スワップ)
+    bool swap = ((val >> GR_PIN_SWAP) & 1) == 0;
+
+    if (!swap) {
+        GR_BtnState[0] = top_l;
+        GR_BtnState[1] = top_m;
+        GR_BtnState[2] = top_r;
+        GR_BtnState[3] = btm_l;
+        GR_BtnState[4] = btm_m;
+        GR_BtnState[5] = btm_r;
+    } else {
+        GR_BtnState[0] = btm_l;
+        GR_BtnState[1] = btm_m;
+        GR_BtnState[2] = btm_r;
+        GR_BtnState[3] = top_l;
+        GR_BtnState[4] = top_m;
+        GR_BtnState[5] = top_r;
+    }
+
+    // リセットボタン (LOW=押下)
+    bool reset_pressed = ((val >> GR_PIN_RESET) & 1) == 0;
+    if (reset_pressed) {
+        GR_ResetFrameCount++;
+    } else {
+        GR_ResetFrameCount = 0;
+    }
+
+    // ロータリースイッチ読み取り (LOW=選択中)
+    GR_CurrentRapidOff = 0;  // デフォルト=連射なし
+    for (int i = 0; i < 6; i++) {
+        if (((val >> (GR_PIN_ROT1 + i)) & 1) == 0) {
+            GR_CurrentRapidOff = GR_RapidOffFrames[i];
+            break;
+        }
+    }
+}
+
+// 単一スロットのボタン出力処理ヘルパー
+static void ProcessButton_GR(int slot, bool pressed, uint8_t *counter) {
+    const GR_ButtonConfig *cfg = &GR_Btn_Config[slot];
+    switch (cfg->mode) {
+        case GR_BTN_MODE_DISABLED:
+            // 何もしない
+            break;
+        case GR_BTN_MODE_HOLD:
+            gpio_put(cfg->gpio, pressed ? 1 : 0);
+            *counter = 0;
+            break;
+        case GR_BTN_MODE_RAPID_ROTARY:
+            if (pressed) {
+                if (GR_CurrentRapidOff == 0) {
+                    gpio_put(cfg->gpio, 1);
+                } else {
+                    gpio_put(cfg->gpio, (*counter == 0) ? 1 : 0);
+                    (*counter)++;
+                    if (*counter > GR_CurrentRapidOff) *counter = 0;
+                }
+            } else {
+                gpio_put(cfg->gpio, 0);
+                *counter = 0;
+            }
+            break;
+        case GR_BTN_MODE_RAPID_FIXED:
+            if (pressed) {
+                if (cfg->rapid_off == 0) {
+                    gpio_put(cfg->gpio, 1);
+                } else {
+                    gpio_put(cfg->gpio, (*counter == 0) ? 1 : 0);
+                    (*counter)++;
+                    if (*counter > cfg->rapid_off) *counter = 0;
+                }
+            } else {
+                gpio_put(cfg->gpio, 0);
+                *counter = 0;
+            }
+            break;
+    }
+}
+
+// GR専用出力処理
+void InputExecute_GR() {
+    // リセット: GR_RESET_HOLD_FRAMES 継続押下でアサート
+    gpio_put(Output_Pin_GR[GR_OUT_RESET],
+             (GR_ResetFrameCount >= GR_RESET_HOLD_FRAMES) ? 1 : 0);
+
+    // 各スロットのボタンを設定に従って処理
+    for (int i = 0; i < 6; i++) {
+        ProcessButton_GR(i, GR_BtnState[i], &GR_RapidCnt[i]);
+    }
+}
+
+// 同期信号入力発生時の処理 (旧実装: 設定モード用)
 void InputExecute() {
     Rapid = !Rapid;
 
@@ -901,6 +1094,58 @@ static void save_io_setting_to_flash(uint32_t save_address, uint8_t *save_data, 
     gpio_put(LED_PIN, 0);
 
     printf("saved!\n");
+}
+
+// EF設定をフラッシュから読み込む
+// フラッシュレイアウト(0x1C3000):
+//   [0] E mode, [1] E gpio, [2] E rapid_off
+//   [3] F mode, [4] F gpio, [5] F rapid_off
+// ボタン設定のデフォルト値
+// スロット: 0=TOP_L, 1=TOP_M, 2=TOP_R, 3=BTM_L, 4=BTM_M, 5=BTM_R
+static const GR_ButtonConfig GR_Btn_Default[6] = {
+    {GR_BTN_MODE_HOLD,         18, 1},  // slot0: TOP_L → GP18 ホールド
+    {GR_BTN_MODE_HOLD,         17, 1},  // slot1: TOP_M → GP17 ホールド
+    {GR_BTN_MODE_HOLD,         16, 1},  // slot2: TOP_R → GP16 ホールド
+    {GR_BTN_MODE_RAPID_ROTARY, 18, 1},  // slot3: BTM_L → GP18 連射(ロータリー)
+    {GR_BTN_MODE_HOLD,         17, 1},  // slot4: BTM_M → GP17 ホールド
+    {GR_BTN_MODE_HOLD,         16, 1},  // slot5: BTM_R → GP16 ホールド
+};
+
+// ボタン設定をフラッシュから読み込む
+void LoadButtonConfig() {
+    uint8_t buf[FLASH_PAGE_SIZE];
+    load_io_setting_from_flash(FLASH_TARGET_OFFSET_EF_Setting, buf);
+
+    for (int i = 0; i < 6; i++) {
+        uint8_t mode      = buf[i * 3 + 0];
+        uint8_t gpio_pin  = buf[i * 3 + 1];
+        uint8_t rapid_off = buf[i * 3 + 2];
+
+        // 未初期化(0xFF)またはモード範囲外はデフォルト値を使用
+        if (mode > GR_BTN_MODE_RAPID_FIXED || mode == 0xFF) {
+            GR_Btn_Config[i] = GR_Btn_Default[i];
+        } else {
+            if (gpio_pin > 28 || gpio_pin == 0xFF) gpio_pin = GR_Btn_Default[i].gpio;
+            if (rapid_off == 0 || rapid_off > 6 || rapid_off == 0xFF) rapid_off = 1;
+            GR_Btn_Config[i].mode      = mode;
+            GR_Btn_Config[i].gpio      = gpio_pin;
+            GR_Btn_Config[i].rapid_off = rapid_off;
+        }
+    }
+}
+
+// ボタン設定をフラッシュに保存する
+void SaveButtonConfig() {
+    uint8_t buf[FLASH_PAGE_SIZE];
+    memset(buf, 0xFF, sizeof(buf));
+
+    for (int i = 0; i < 6; i++) {
+        buf[i * 3 + 0] = GR_Btn_Config[i].mode;
+        buf[i * 3 + 1] = GR_Btn_Config[i].gpio;
+        buf[i * 3 + 2] = GR_Btn_Config[i].rapid_off;
+    }
+
+    save_io_setting_to_flash(FLASH_TARGET_OFFSET_EF_Setting, buf, FLASH_PAGE_SIZE);
 }
 
 // ここからマクロ設定用
