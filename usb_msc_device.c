@@ -62,7 +62,7 @@ static bool has_expected_header_n(const char *data, size_t len) {
 }
 
 // GR button config データ行の検証:
-//   - 先頭が '0'〜'5' の数字
+//   - 先頭が 'A'〜'F' または 'a'〜'f'
 //   - カンマ区切り4フィールド (SLOT,MODE,GPIO,RAPID_OFF)
 static bool validate_settings_lines_n(const char *data, size_t len) {
     if (!data || len == 0) return false;
@@ -83,8 +83,10 @@ static bool validate_settings_lines_n(const char *data, size_t len) {
         // '#' で始まる行はコメント
         if (line_start[0] == '#') continue;
 
-        // データ行は '0'〜'5' で始まる
-        if (line_start[0] < '0' || line_start[0] > '5') continue;
+        // データ行は 'A'〜'F' または 'a'〜'f' で始まる
+        char c = line_start[0];
+        bool is_slot = (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
+        if (!is_slot) continue;
 
         // コンマが3つあること (4フィールド)
         int commas = 0;
@@ -223,7 +225,7 @@ static void build_fat12_image(void) {
     // ヘッダコメント
     pos += snprintf(text + pos, DISK_SECTOR_SIZE - pos,
         "# PicoRapidX2GR Button Configuration\r\n"
-        "# SLOT: 0=TOP_L  1=TOP_M  2=TOP_R  3=BTM_L  4=BTM_M  5=BTM_R\r\n"
+        "# SLOT: A=TOP_L  B=TOP_M  C=TOP_R  D=BTM_L  E=BTM_M  F=BTM_R\r\n"
         "# MODE: 0=DISABLED  1=HOLD  2=RAPID_ROTARY  3=RAPID_FIXED\r\n"
         "# GPIO: output GPIO number (0-28)\r\n"
         "# RAPID_OFF: off-frames for RAPID_FIXED mode (1-6)\r\n"
@@ -244,8 +246,8 @@ static void build_fat12_image(void) {
             if (rapid_off == 0 || rapid_off  > 6 || rapid_off == 0xFF) rapid_off = 1;
         }
         pos += snprintf(text + pos, DISK_SECTOR_SIZE - pos,
-            "%d,%d,%d,%d  # %s\r\n",
-            i, mode, gpio_pin, rapid_off, slot_names[i]);
+            "%c,%d,%d,%d  # %s\r\n",
+            'A' + i, mode, gpio_pin, rapid_off, slot_names[i]);
     }
 
     uint32_t fsize = (uint32_t)pos;
@@ -316,7 +318,10 @@ static void parse_settings_csv_n(const char *csv_data, size_t csv_len) {
 
         // '#' コメント行・空行をスキップ
         if (line_start[0] == '#') continue;
-        if (line_start[0] < '0' || line_start[0] > '5') continue;
+        // データ行は 'A'〜'F' または 'a'〜'f' で始まる
+        char first = line_start[0];
+        bool is_slot_char = (first >= 'A' && first <= 'F') || (first >= 'a' && first <= 'f');
+        if (!is_slot_char) continue;
 
         // バッファにコピーし '#' 以降を切り捨て
         size_t line_len = (size_t)(line_end - line_start);
@@ -326,12 +331,21 @@ static void parse_settings_csv_n(const char *csv_data, size_t csv_len) {
         buf[line_len] = '\0';
         for (int k = 0; buf[k]; k++) { if (buf[k] == '#') { buf[k] = '\0'; break; } }
 
-        // SLOT,MODE,GPIO,RAPID_OFF の4フィールドをパース
-        int values[4] = {-1, -1, -1, -1};
-        int value_count = 0;
+        // SLOT(A-F)をインデックス(0-5)に変換してから残り3フィールドをパース
         char *s = buf;
+        char *f0 = s; while (*f0 == ' ' || *f0 == '\t') f0++;
+        char slot_char = f0[0];
+        int slot = (slot_char >= 'a') ? (slot_char - 'a') : (slot_char - 'A');
+        // 最初のカンマまで進める
+        while (*s && *s != ',') s++;
+        if (*s != ',') continue;
+        s++; // カンマの次へ
+
+        // 残り3フィールド (MODE,GPIO,RAPID_OFF) をパース
+        int values[3] = {-1, -1, -1};
+        int value_count = 0;
         char *field = s;
-        for (int k = 0; s[k] != '\0' && value_count < 4; k++) {
+        for (int k = 0; s[k] != '\0' && value_count < 3; k++) {
             if (s[k] == ',') {
                 s[k] = '\0';
                 char *f = field; while (*f == ' ' || *f == '\t') f++;
@@ -340,16 +354,15 @@ static void parse_settings_csv_n(const char *csv_data, size_t csv_len) {
             }
         }
         // 最後のフィールド
-        if (value_count < 4) {
+        if (value_count < 3) {
             char *f = field; while (*f == ' ' || *f == '\t') f++;
             values[value_count++] = atoi(f);
         }
-        if (value_count < 4) continue;
+        if (value_count < 3) continue;
 
-        int slot      = values[0];
-        int mode      = values[1];
-        int gpio_pin  = values[2];
-        int rapid_off = values[3];
+        int mode      = values[0];
+        int gpio_pin  = values[1];
+        int rapid_off = values[2];
 
         // 範囲チェック
         if (slot < 0 || slot > 5) continue;
