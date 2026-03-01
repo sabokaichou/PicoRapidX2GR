@@ -110,7 +110,8 @@ const uint16_t row_byte_half = 128;
 #define SCL_PIN 21 // GP21
 
 // GPIO関連
-#define Sync_Pin 28
+#define Sync_Pin 2   // CSync入力 (GP02)
+#define VBUS_PIN 24  // VBUS検出ピン（USB接続検知用）
 
 #define Sync_IRQ_enable   gpio_set_irq_enabled(Sync_Pin, 0x4u, true);
 #define Sync_IRQ_disable  gpio_set_irq_enabled(Sync_Pin, 0x4u, false);
@@ -118,21 +119,23 @@ const uint16_t row_byte_half = 128;
 const int32_t maskGPIO   = 0b11101111111111111111111111111; // GP28-GP0 (GP28,27,26,22-0)
 const int32_t maskIO     = 0b00000000000000000111111111111; // GP28-GP0 (GP11-0)
 
-bool InputStatus[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+bool InputStatus[] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 uint8_t boardMode = 0;
 
-int Output_Pin[] = {11, 10, 9, 8, 6, 7, 5, 4, 3, 2, 1, 0};
+int Output_Pin[] = {11, 10, 9, 8, 6, 7, 5, 4, 3};
 int Input_Pin[]  = {15, 14, 13, 12, 16, 17, 18, 19, 20, 21, 22, 26};
 
-//int8_t Output_Pin[] = {4, 3, 11, 10, 9, 8, 7, 6, 5, 2, 1, 0};
+//int8_t Output_Pin[] = {4, 3, 11, 10, 9, 8, 7, 6, 5};
 //int8_t Input_Pin[]  = {19, 20, 12, 13, 14, 15, 16, 17, 18, 21, 22, 26};
 
-const int8_t Output_Pin_A[] = {11, 10, 9, 8, 6, 7, 5, 4, 3, 2, 1, 0};
 const int8_t Input_Pin_A[]  = {15, 14, 13, 12, 16, 17, 18, 19, 20, 21, 22, 26};
 
-const int8_t Output_Pin_B[] = {4, 3, 11, 10, 9, 8, 7, 6, 5, 2, 1, 0};
 const int8_t Input_Pin_B[]  = {19, 20, 12, 13, 14, 15, 16, 17, 18, 21, 22, 26};
+
+// PicoRapidX2GR 出力ピン定義 (JAMMAコネクタ対応)
+// INDEX: 0=リセット 1=スタート 2=上 3=下 4=左(JAMMA) 5=右 6=A 7=B 8=C
+const int8_t Output_Pin_GR[] = {28, 27, 26, 22, 21, 20, 18, 17, 16};
 
 // GPIO関連(設定)
 bool SettingMode = false;
@@ -142,9 +145,6 @@ const int32_t maskIO_Macro   = 0b0000000000000000000000000000; // GP19-GP0
 
 const uint8_t Input_Pin_Macro[]  = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 26, 27};
 const uint8_t GPIO_InputNo_Macro[] = {2, 3, 5, 4, 6, 7, 8, 9, 10, 11, 0, 1};
-
-// GamePadモード用入力ピン配列（Input_Pin_Macroの最初の12個を使用）
-const uint8_t Input_Pin_GamePad[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
 
 #define ModeSW_Pin 27
 #define EnterSW_Pin 26
@@ -205,7 +205,7 @@ bool Button_Flg = false;
 bool Check_FrameDelete_Flg = false;
 bool Check_FrameInsert_Flg = false;
 bool ChangeBoard_Flg = false;
-bool GamePadMode = false;  // GamePadモード中フラグ
+bool UsbConnected = false;  // USB接続検出フラグ
 bool FrameToggle = false;  // ループごとにtrue/falseを繰り返す
 
 uint8_t SelectMode = SelectMode_Normal;
@@ -231,12 +231,18 @@ bool SetMacroMode = false;
 static absolute_time_t last_sync_time;
 
 // 選択状態
-unsigned char DispPanel[12] = {'0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'};
+unsigned char DispPanel[9] = {'0', '0', '0', '0', '0', '0', '0', '0', '0'};
 
 // flash関連
-// W25Q16JVの最終ブロック(Block31)のセクタ0の先頭アドレス = 0x1F0000
-const uint32_t FLASH_TARGET_OFFSET_IO_Setting = 0x1F0000;
-const uint32_t FLASH_TARGET_OFFSET_IO_Board = 0x1D0000;
+// PicoRapidX2GR専用アドレス (Block28内の空き領域を使用)
+// 0x1C0000: VSyncSeparator設定 (他プロジェクト)
+// 0x1C1000: PicoRapidX2GR IO設定 (専用)
+// 0x1C2000: PicoRapidX2GR ボード設定 (専用)
+// 0x1D0000: IO_Board (PicoRapidX/PicoRapidX2 共用)
+// 0x1E0000-0x1EF000: Macro 0-15 (全プロジェクト共用)
+// 0x1F0000: IO_Setting (PicoRapidX/PicoRapidX2 共用)
+const uint32_t FLASH_TARGET_OFFSET_IO_Setting = 0x1C1000;
+const uint32_t FLASH_TARGET_OFFSET_IO_Board = 0x1C2000;
 uint8_t g_read_io_data[FLASH_PAGE_SIZE];
 uint8_t g_save_io_data[FLASH_PAGE_SIZE];
 uint8_t g_read_macro_data[FLASH_PAGE_SIZE];
@@ -265,7 +271,7 @@ const uint32_t FLASH_TARGET_OFFSET_Macro_15 = 0x1EF000;
 bool Rapid = false; // 表/裏管理用
 int8_t SyncCount_15 = -1; // 15連表/裏管理用
 
-const int IOCount = 12;
+const int IOCount = 9;
 
 // 入力内容に対応した出力内容を設定する構造体
 typedef struct {
@@ -283,26 +289,26 @@ typedef struct {
     uint8_t OutputFrameCount;   // 出力中フレーム数
     uint8_t IntervalFrameCount; // インターバル中フレーム数
 
-    int16_t OutputGPIONo[12];   // 出力するGPIO番号を格納（-1 を含むため符号付）
+    int16_t OutputGPIONo[9];    // 出力するGPIO番号を格納（-1 を含むため符号付）
 
-    bool OutputNo[12];      // 出力するPinのID
+    bool OutputNo[9];       // 出力するPinのID
 
     int16_t CurrentPin;         // 現在処理しているOutputGPIONoを格納
 } IOSettingDef;
-IOSettingDef IOSetting[12];
+IOSettingDef IOSetting[9];
 
 // 設定モード関連
 IOSettingDef IOSetting_Current;
 uint8_t SelectInputNo = 0;
 
-bool GPIOStatusOn[12] = {false, false, false, false, false, false, false, false, false, false, false, false}; // 出力中ステータス
+bool GPIOStatusOn[9] = {false, false, false, false, false, false, false, false, false}; // 出力中ステータス
 
 // コマンド管理用宣言
 uint8_t ExecuteInputNo = 0; // 実行中の入力番号を格納
-uint8_t LastFrameCount[12]; // 各入力番号で登録されたコマンドのフレーム数
+uint8_t LastFrameCount[9];  // 各入力番号で登録されたコマンドのフレーム数
 const uint16_t MaxMacroFrame = 120; // 256以上にする場合はアドレスが重複してしまうので処理を変更する必要あり
 // マクロ設定/実行セットを16ビットにビットパック（bit0=有効フレーム, bit1-15=出力1-15）
-uint16_t MacroSettingBits[12][150];
+uint16_t MacroSettingBits[9][150];
 uint8_t MacroFrame = 1;
 uint8_t MacroFrame_Total = 1;
 uint8_t SelectMacroNo = 0;
@@ -311,8 +317,8 @@ typedef struct {
     bool LastButtonOn; // 前のフレームでのオン/オフ
     uint8_t CurrentFrame;  // 現在実行中のフレーム番号
 } ButtonCommand;
-ButtonCommand buttonCommands[12];  // 各入力に割り当てられたコマンド管理変数
-uint16_t CommandSetBits[12][150];
+ButtonCommand buttonCommands[9];   // 各入力に割り当てられたコマンド管理変数
+uint16_t CommandSetBits[9][150];
 
 // ビット操作ヘルパー
 static inline bool bit_get_u16(const uint16_t v, int bit) { return (v >> bit) & 1u; }
@@ -369,7 +375,7 @@ void Ssd1306_Update_Frame();
 bool I2C_WriteData(unsigned char dev_adr, void *buf, unsigned long buf_length);
 void DrawMessage(int row_pos, char *Message, bool reverse_flg);
 DispPatternDef getcharPattern(char DispChar);
-void DrawControlPanel(char InputState[12]);
+void DrawControlPanel(char InputState[9]);
 void SetCharPattern(); 
 void SetCharPattern_Number();
 void SetCharPattern_ALPHABET();
@@ -385,405 +391,74 @@ int main() {
     load_io_setting_from_flash(FLASH_TARGET_OFFSET_IO_Board, g_read_io_data);
     SetBoardMode();
 
-    InitGPIO();
+    // VBUS検出（GPIO24）でUSB接続を判定
+    gpio_init(VBUS_PIN);
+    gpio_set_dir(VBUS_PIN, GPIO_IN);
+    busy_wait_ms(5);  // 安定化待ち
+    UsbConnected = gpio_get(VBUS_PIN);
 
-    // 起動時のボタンチェック
-    gpio_pull_up(ModeSW_Pin);
-    gpio_pull_up(EnterSW_Pin);
-    busy_wait_ms(2);
-    
-    bool mode_pressed = (gpio_get(ModeSW_Pin) == 0);
-    
-    // Modeボタン: ゲームパッドモード
-    if (mode_pressed) {
-        GamePadMode = true;  // GamePadモードフラグを設定
-        
-        // GamePad用入力ピン配列を選択
-        const uint8_t *gamepad_pins = Input_Pin_GamePad;
-        
-        // Modeボタンピンを無効化（誤入力防止）
-        gpio_set_function(ModeSW_Pin, GPIO_FUNC_NULL);
-        gpio_disable_pulls(ModeSW_Pin);
-        
-        // 入力ピンの初期化（0-11を使用）
-        for (int i = 0; i < 12; i++) {
-            gpio_init(gamepad_pins[i]);
-            gpio_set_dir(gamepad_pins[i], GPIO_IN);
-            gpio_pull_up(gamepad_pins[i]);
-        }
-        
-        // 設定ボタンの初期化（DL, DR）
-        gpio_init(SettingSW_DL_Pin);
-        gpio_set_dir(SettingSW_DL_Pin, GPIO_IN);
-        gpio_pull_up(SettingSW_DL_Pin);
-        
-        gpio_init(SettingSW_DR_Pin);
-        gpio_set_dir(SettingSW_DR_Pin, GPIO_IN);
-        gpio_pull_up(SettingSW_DR_Pin);
-        
-        // 連射設定を読み込み
+    if (UsbConnected) {
+        // === USB接続モード: MSCデバイスとして動作 ===
+        InitGPIO();
         SetIOSetting();
-        
+
         // I2C初期化（OLED用）
         i2c_init(I2C_PORT, 400 * 1000);
         gpio_set_function(SDA_PIN, GPIO_FUNC_I2C);
         gpio_set_function(SCL_PIN, GPIO_FUNC_I2C);
         gpio_pull_up(SDA_PIN);
         gpio_pull_up(SCL_PIN);
-        
+
         // OLED初期化
         Ssd1306_Init();
         SetCharPattern();
         canvas = Ssd1306_Get_Draw_Canvas();
-        DrawMessage(0, "GamePad Mode", false);
-        DrawMessage(1, "Wait USB...", false);
+        DrawMessage(0, "USB Mode", false);
+        DrawMessage(1, "MSC Ready", false);
         Ssd1306_Update_Frame();
-        
-        // MSC初期化（HID+MSC複合デバイスのため必要）
+
+        // MSC初期化
         usb_msc_start();
-        
-        // USB初期化待機
-        for (int i = 0; i < 10; i++) {
-            tud_task();
-            sleep_ms(10);
+
+        // USB接続モードでは出力として使っていたGP26/GP27を入力として再設定
+        gpio_init(ModeSW_Pin);
+        gpio_set_dir(ModeSW_Pin, GPIO_IN);
+        gpio_set_input_hysteresis_enabled(ModeSW_Pin, true);
+        gpio_pull_up(ModeSW_Pin);
+        gpio_set_irq_enabled_with_callback(ModeSW_Pin, 0x4u, true, callback_sync);
+        gpio_init(EnterSW_Pin);
+        gpio_set_dir(EnterSW_Pin, GPIO_IN);
+        gpio_pull_up(EnterSW_Pin);
+
+        // 起動時のボタンチェック（設定モード用）
+        busy_wait_ms(2);
+
+        bool mode_pressed = (gpio_get(ModeSW_Pin) == 0);
+        if (mode_pressed) {
+            // Modeボタン押下: 設定モードへ
+            StartSettingMode();
         }
-        
-        // ゲームパッドメインループ
-        uint8_t report[3] = {0, 0, 0};  // [0]=buttons 1-8, [1]=buttons 9-16, [2]=hat switch
-        bool connected = false;
-        uint32_t last_check = 0;
-        uint32_t last_report = 0;
-        
-        // 連射用カウンタ（各入力ごと）
-        uint8_t rapid_counter[12] = {0};
-        bool rapid_state[12] = {false};  // 連射のON/OFF状態
-        int8_t sync_count_15 = 0;  // 15Hz連射用カウンタ (0→1→2→3→0のサイクル)
-        
-        // マクロ実行用
-        int8_t ExecuteInputNo = -1;  // 現在実行中のマクロの入力番号 (-1=なし)
-        bool macro_output_state[12] = {false};  // マクロ実行時の出力状態
-        
+
+        // MSCメインループ
         while (true) {
-            // 1000Hzポーリング（1ms周期）
             tud_task();
-            usb_msc_task();  // MSCタスクも処理（複合デバイスのため）
-            
-            uint32_t now = to_ms_since_boot(get_absolute_time());
-            
-            // 接続状態チェック（500ms毎）
-            if (now - last_check > 500) {
-                last_check = now;
-                bool mounted = tud_mounted();
-                
-                if (mounted && !connected) {
-                    connected = true;
-                    DrawMessage(1, "Connected!", false);
-                    Ssd1306_Update_Frame();
-                } else if (!mounted && connected) {
-                    connected = false;
-                    DrawMessage(1, "Wait USB...", false);
-                    Ssd1306_Update_Frame();
-                }
+            usb_msc_task();
+
+            // OLED表示更新（接続状態）
+            static bool last_mounted = false;
+            bool mounted = tud_mounted();
+            if (mounted != last_mounted) {
+                last_mounted = mounted;
+                DrawMessage(1, mounted ? "MSC Ready" : "Wait USB...", false);
+                Ssd1306_Update_Frame();
             }
-            
-            // レポート作成は60Hz（16.67ms）
-            if (now - last_report < 17) {
-                sleep_ms(1);  // 1ms待機（1000Hzポーリング）
-                continue;
-            }
-            last_report = now;
-            
-            // 連射処理（入力0-11に対応する設定を取得）
-            // 設定0 → 入力10
-            // 設定1 → 入力11
-            // 設定2-11 → 入力0-9
-            for (int i = 0; i < 12; i++) {
-                int setting_index;
-                if (i <= 9) {
-                    // 入力0-9 → 設定2-11
-                    setting_index = i + 2;
-                } else {
-                    // 入力10,11 → 設定0,1
-                    setting_index = i - 10;
-                }
-                
-                bool button_pressed = (gpio_get(gamepad_pins[i]) == 0);
-                
-                if (!button_pressed) {
-                    // ボタンが離されている
-                    rapid_state[i] = false;
-                    rapid_counter[i] = 0;  // カウンタリセット
-                } else {
-                    // ボタンが押されている - 連射設定に応じて処理
-                    if (IOSetting[setting_index].RapidType == 1) {
-                        // RapidType=1: 連射無効、押しっぱなし
-                        rapid_state[i] = true;
-                    } else if (IOSetting[setting_index].RapidType == 2) {
-                        // RapidType=2: 30Hz連射 (FrameToggleがtrueの時ON)
-                        rapid_state[i] = FrameToggle;
-                    } else if (IOSetting[setting_index].RapidType == 3) {
-                        // RapidType=3: 30Hz連射反転 (FrameToggleがfalseの時ON)
-                        rapid_state[i] = !FrameToggle;
-                    } else if (IOSetting[setting_index].RapidType == 4) {
-                        // RapidType=4: カスタム連射 (OutputFrame/IntervalFrame指定)
-                        rapid_counter[i]++;
-                        
-                        // ON期間中
-                        if (rapid_state[i]) {
-                            if (rapid_counter[i] >= IOSetting[setting_index].OutputFrame) {
-                                // OFF期間へ移行
-                                rapid_state[i] = false;
-                                rapid_counter[i] = 0;
-                            }
-                        }
-                        // OFF期間中
-                        else {
-                            if (rapid_counter[i] >= IOSetting[setting_index].IntervalFrame) {
-                                // ON期間へ移行
-                                rapid_state[i] = true;
-                                rapid_counter[i] = 0;
-                            }
-                        }
-                    } else if (IOSetting[setting_index].RapidType == 6) {
-                        // RapidType=6: 15Hz連射 (sync_count_15が0,1の時ON)
-                        rapid_state[i] = (sync_count_15 >= 0 && sync_count_15 < 2);
-                    } else if (IOSetting[setting_index].RapidType == 7) {
-                        // RapidType=7: 15Hz連射反転 (sync_count_15が2,3の時ON)
-                        rapid_state[i] = (sync_count_15 >= 2);
-                    } else if (IOSetting[setting_index].RapidType == 5) {
-                        // RapidType=5: マクロ
-                        // マクロが設定されている場合のみ処理
-                        uint8_t macro_index = IOSetting[setting_index].CommandType;
-                        if (macro_index < 12 && LastFrameCount[macro_index] > 0) {
-                            // マクロ実行中でない場合のみ、このボタンのマクロを開始
-                            if (ExecuteInputNo == -1) {
-                                ExecuteInputNo = i;
-                                buttonCommands[i].CurrentFrame = 0;
-                                buttonCommands[i].LastButtonOn = true;
-                            }
-                        }
-                        rapid_state[i] = false;  // マクロ実行時は通常の入力は無効
-                    } else {
-                        // RapidType=8以降: 未実装
-                        rapid_state[i] = false;
-                    }
-                }
-            }
-            
-            // マクロ実行処理
-            if (ExecuteInputNo != -1) {
-                int input_no = ExecuteInputNo;
-                int setting_index;
-                if (input_no <= 9) {
-                    setting_index = input_no + 2;
-                } else {
-                    setting_index = input_no - 10;
-                }
-                
-                uint8_t macro_index = IOSetting[setting_index].CommandType;
-                if (macro_index < 12 && LastFrameCount[macro_index] > 0) {
-                    // 現在のフレームからマクロデータを読み取る
-                    uint8_t current_frame = buttonCommands[input_no].CurrentFrame;
-                    uint16_t frame_data = CommandSetBits[macro_index][current_frame];
-                    
-                    // 12個の出力状態をmacro_output_stateに格納
-                    for (int output_no = 0; output_no < 12; output_no++) {
-                        macro_output_state[output_no] = bit_get_u16(frame_data, output_no);
-                    }
-                    
-                    // 次のフレームへ
-                    buttonCommands[input_no].CurrentFrame++;
-                    
-                    // マクロ終了判定
-                    if (buttonCommands[input_no].CurrentFrame >= LastFrameCount[macro_index]) {
-                        // RepeatModeに応じて処理
-                        if (IOSetting[setting_index].RepeatMode == 1) {
-                            // リピートモード: 最初のフレームに戻る
-                            buttonCommands[input_no].CurrentFrame = 0;
-                            
-                            // ボタンが離されていたらマクロ終了
-                            bool button_pressed = (gpio_get(gamepad_pins[input_no]) == 0);
-                            if (!button_pressed) {
-                                ExecuteInputNo = -1;
-                                for (int j = 0; j < 12; j++) {
-                                    macro_output_state[j] = false;
-                                }
-                            }
-                        } else {
-                            // リピートなし: マクロ終了
-                            ExecuteInputNo = -1;
-                            for (int j = 0; j < 12; j++) {
-                                macro_output_state[j] = false;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // 15Hz連射用カウンタを更新 (4フレームで1サイクル: 0→1→2→3→0)
-            sync_count_15++;
-            if (sync_count_15 >= 4) sync_count_15 = 0;
-            
-            // FrameToggleを反転
-            FrameToggle = !FrameToggle;
-            
-            // HIDレポートデータ作成
-            report[0] = 0;  // buttons 1-8
-            report[1] = 0;  // buttons 9-16
-            report[2] = 8;  // hat switch (8 = neutral)
-            
-            // ハットスイッチ用の方向フラグ
-            bool hat_up = false, hat_down = false, hat_left = false, hat_right = false;
-            
-            // マクロ実行中は、マクロの出力状態をそのままHIDレポートに反映
-            if (ExecuteInputNo != -1) {
-                // macro_output_state[0-11]を直接HIDボタンにマッピング
-                // kはOutput_Pin配列のインデックス(0-11)
-                for (int k = 0; k < 12; k++) {
-                    if (!macro_output_state[k]) continue;
-                    
-                    // Output_Pin[k]のインデックスに応じてボタンまたはハットを設定
-                    // 通常の入力処理と同じマッピング
-                    if (k == 0) {
-                        report[0] |= (1 << 6);  // ボタン7
-                    } else if (k == 1) {
-                        report[0] |= (1 << 7);  // ボタン8
-                    } else if (k == 2) {
-                        hat_up = true;  // ハット上
-                    } else if (k == 3) {
-                        hat_down = true;  // ハット下
-                    } else if (k == 4) {
-                        hat_right = true;  // ハット右 (Output_Pin[4]=GPIO9)
-                    } else if (k == 5) {
-                        hat_left = true;  // ハット左 (Output_Pin[5]=GPIO8)
-                    } else if (k == 6) {
-                        report[0] |= (1 << 1);  // ボタン2
-                    } else if (k == 7) {
-                        report[0] |= (1 << 2);  // ボタン3
-                    } else if (k == 8) {
-                        report[0] |= (1 << 3);  // ボタン4
-                    } else if (k == 9) {
-                        report[0] |= (1 << 0);  // ボタン1
-                    } else if (k == 10) {
-                        report[1] |= (1 << 0);  // ボタン9
-                    } else if (k == 11) {
-                        report[1] |= (1 << 1);  // ボタン10
-                    }
-                }
-            } else {
-                // マクロ実行中でない場合: 通常の入力処理
-                // 入力とボタンのマッピング（OutputGPIONoベース）
-                // 出力0 → ボタン7
-                // 出力1 → ボタン8
-                // 出力2 → ハット上
-                // 出力3 → ハット下
-                // 出力4 → ハット左
-                // 出力5 → ハット右
-                // 出力6 → ボタン2
-                // 出力7 → ボタン3
-                // 出力8 → ボタン4
-                // 出力9 → ボタン1
-                // 出力10 → ボタン9
-                // 出力11 → ボタン10
-                
-                for (int i = 0; i < 12; i++) {
-                    if (!rapid_state[i]) continue;  // ボタンが押されていない
-                
-                int setting_index;
-                if (i <= 9) {
-                    setting_index = i + 2;  // 入力0-9 → 設定2-11
-                } else {
-                    setting_index = i - 10;  // 入力10,11 → 設定0,1
-                }
-                
-                // この入力に設定された出力ピンをすべてONにする
-                for (int j = 0; j < 12; j++) {
-                    if (IOSetting[setting_index].OutputGPIONo[j] == -1) break;
-                    
-                    // OutputGPIONoからOutput_Pinのインデックスを逆引き
-                    for (int k = 0; k < 12; k++) {
-                        if (Output_Pin[k] == IOSetting[setting_index].OutputGPIONo[j]) {
-                            // Output_Pin[k]に対応する機能をON
-                            // 出力0 → ボタン7
-                            // 出力1 → ボタン8
-                            // 出力2 → ハット上
-                            // 出力3 → ハット下
-                            // 出力4 → ハット左
-                            // 出力5 → ハット右
-                            // 出力6 → ボタン2
-                            // 出力7 → ボタン3
-                            // 出力8 → ボタン4
-                            // 出力9 → ボタン1
-                            // 出力10 → ボタン9
-                            // 出力11 → ボタン10
-                            if (k == 0) {
-                                report[0] |= (1 << 6);  // ボタン7
-                            } else if (k == 1) {
-                                report[0] |= (1 << 7);  // ボタン8
-                            } else if (k == 2) {
-                                hat_up = true;  // ハット上
-                            } else if (k == 3) {
-                                hat_down = true;  // ハット下
-                            } else if (k == 4) {
-                                hat_left = true;  // ハット左
-                            } else if (k == 5) {
-                                hat_right = true;  // ハット右
-                            } else if (k == 6) {
-                                report[0] |= (1 << 1);  // ボタン2
-                            } else if (k == 7) {
-                                report[0] |= (1 << 2);  // ボタン3
-                            } else if (k == 8) {
-                                report[0] |= (1 << 3);  // ボタン4
-                            } else if (k == 9) {
-                                report[0] |= (1 << 0);  // ボタン1
-                            } else if (k == 10) {
-                                report[1] |= (1 << 0);  // ボタン9
-                            } else if (k == 11) {
-                                report[1] |= (1 << 1);  // ボタン10
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-            }  // マクロ実行中でない場合の終了
-            
-            // SettingSW_DL/DR は直接ボタン5,6として扱う
-            if (gpio_get(SettingSW_DL_Pin) == 0) report[0] |= (1 << 4);  // ボタン5
-            if (gpio_get(SettingSW_DR_Pin) == 0) report[0] |= (1 << 5);  // ボタン6
-            
-            // ハットスイッチの値を決定
-            // 0=上, 1=右上, 2=右, 3=右下, 4=下, 5=左下, 6=左, 7=左上, 8=ニュートラル
-            if (hat_up && !hat_left && !hat_right) {
-                report[2] = 0;  // 上
-            } else if (hat_up && hat_right) {
-                report[2] = 1;  // 右上
-            } else if (hat_right && !hat_up && !hat_down) {
-                report[2] = 2;  // 右
-            } else if (hat_down && hat_right) {
-                report[2] = 3;  // 右下
-            } else if (hat_down && !hat_left && !hat_right) {
-                report[2] = 4;  // 下
-            } else if (hat_down && hat_left) {
-                report[2] = 5;  // 左下
-            } else if (hat_left && !hat_up && !hat_down) {
-                report[2] = 6;  // 左
-            } else if (hat_up && hat_left) {
-                report[2] = 7;  // 左上
-            } else {
-                report[2] = 8;  // ニュートラル
-            }
-            
-            // HIDレポート送信（準備ができていれば）
-            if (tud_hid_ready()) {
-                tud_hid_report(0, report, sizeof(report));
-            }
+            sleep_ms(1);
         }
     }
-    
+        
+    // === USB未接続モード: VSync検出 + 連射 ===
+    InitGPIO();
     SetIOSetting();
-
-    //multicore_launch_core1(core1_main); // 同期信号の受付とイベント処理
 
     // VSync分離器初期化（コールバック登録）
     vsync_separator_init_with_callback(vsync_callback);
@@ -809,21 +484,23 @@ void SetBoardMode() {
     boardMode = g_read_io_data[0];
     if (boardMode > 1) boardMode = 0;
 
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < IOCount; i++) {
         Input_Pin[i] = (boardMode == 0) ? Input_Pin_A[i] : Input_Pin_B[i];
-        Output_Pin[i] = (boardMode == 0) ? Output_Pin_A[i] : Output_Pin_B[i];
+        Output_Pin[i] = Output_Pin_GR[i];  // GR専用出力ピン固定
     }
 }
 
 // 入力・設定側初期化
 void InitGPIO() {
-    // 初期モードが違うため標準IOに設定
-    gpio_set_function(26, GPIO_FUNC_SIO);
-    gpio_set_function(27, GPIO_FUNC_SIO);
-    gpio_set_function(28, GPIO_FUNC_SIO);
+    // 使用GPIOを標準SIOモードにリセット
+    gpio_set_function(2,  GPIO_FUNC_SIO);  // GP02: CSync入力
+    gpio_set_function(26, GPIO_FUNC_SIO);  // GP26: 上 (出力)
+    gpio_set_function(27, GPIO_FUNC_SIO);  // GP27: スタート (出力)
+    gpio_set_function(28, GPIO_FUNC_SIO);  // GP28: リセット (出力)
 
-    // 出力ピンを個別に初期化
+    // 出力ピンを個別に初期化 (-1は未使用のためスキップ)
     for (int i = 0; i < IOCount; i++) {
+        if (Output_Pin[i] < 0) continue;
         gpio_init(Output_Pin[i]);
         gpio_set_dir(Output_Pin[i], GPIO_OUT);
         gpio_set_drive_strength(Output_Pin[i], GPIO_DRIVE_STRENGTH_2MA);
@@ -837,9 +514,7 @@ void InitGPIO() {
         gpio_pull_up(Input_Pin[i]);
     }
 
-    gpio_set_input_hysteresis_enabled(ModeSW_Pin, true);
-    gpio_pull_up(ModeSW_Pin);
-    gpio_set_irq_enabled_with_callback(ModeSW_Pin, 0x4u, true, callback_sync);
+    // ModeSW/EnterSWのIRQ設定はUSB接続モード時のみ行う (main()内で実施)
 
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
@@ -942,11 +617,13 @@ void SetIOSetting() {
                     IOSetting[i].CommandType = g_read_io_data[row_start]; // コマンドNo
                     break;
                 default:
-                    IOSetting[i].OutputNo[j - 4] = g_read_io_data[row_start];
-                    // 少しでもループを減らしたいので対象のピン番号を前に詰める
-                    if (g_read_io_data[row_start] == 1) {
-                        IOSetting[i].OutputGPIONo[k] = Output_Pin[j - 4]; // 出力PIN
-                        k++;
+                    if (j - 4 < IOCount) {
+                        IOSetting[i].OutputNo[j - 4] = g_read_io_data[row_start];
+                        // 少しでもループを減らしたいので対象のピン番号を前に詰める
+                        if (g_read_io_data[row_start] == 1) {
+                            IOSetting[i].OutputGPIONo[k] = Output_Pin[j - 4]; // 出力PIN
+                            k++;
+                        }
                     }
                     break;
             }
@@ -956,12 +633,12 @@ void SetIOSetting() {
     // マクロ用変数の初期化
     memset(MacroSettingBits, 0, sizeof(MacroSettingBits));
     memset(CommandSetBits, 0, sizeof(CommandSetBits));
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < IOCount; i++) {
         bit_set_u16(&MacroSettingBits[i][0], 0, true); // 1フレーム目は有効
     }
 
     uint32_t read_address = FLASH_TARGET_OFFSET_Macro_0;
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < IOCount; i++) {
         for (int j = 0; j < 16; j++) {
             load_io_setting_from_flash(read_address, g_read_macro_data);
             for (int k = 0; k < 16; k++) {
@@ -980,7 +657,7 @@ void SetIOSetting() {
 
     read_address = FLASH_TARGET_OFFSET_Macro_15;
     load_io_setting_from_flash(read_address, g_read_macro_repeat_data);
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < IOCount; i++) {
         IOSetting[i].RepeatMode = g_read_macro_repeat_data[i];
     }
 }
@@ -1228,8 +905,8 @@ static void save_io_setting_to_flash(uint32_t save_address, uint8_t *save_data, 
 
 // ここからマクロ設定用
 void StartSettingMode() {
-    // GamePadモード中は設定モードに入らない
-    if (GamePadMode) {
+    // USB未接続時は設定モードに入らない
+    if (!UsbConnected) {
         return;
     }
     
@@ -1319,7 +996,7 @@ void callback_check(uint gpio, uint32_t events) {
 
 void StartSetting() {
     // マクロ用変数の初期化
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < IOCount; i++) {
         for (int j = 0; j < 150; j++) {
             MacroSettingBits[i][j] = 0;
             if (j == 0) bit_set_u16(&MacroSettingBits[i][j], 0, true); // 1フレーム目は有効にしておく
@@ -1331,7 +1008,7 @@ void StartSetting() {
     SetIOData();
 
     uint32_t read_address = FLASH_TARGET_OFFSET_Macro_0;
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < IOCount; i++) {
         for (int j = 0; j < 16; j++) {
             load_io_setting_from_flash(read_address, g_read_macro_data);
             for (int k = 0; k < 16; k++) {
@@ -1347,7 +1024,7 @@ void StartSetting() {
 
     read_address = FLASH_TARGET_OFFSET_Macro_15;
     load_io_setting_from_flash(read_address, g_read_macro_repeat_data);
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < IOCount; i++) {
         IOSetting[i].RepeatMode = g_read_macro_repeat_data[i];
     }
 
@@ -1372,7 +1049,7 @@ void StartSetting() {
 
     SetMacroMode = false;
 
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < IOCount; i++) {
         DispPanel[i] = '0';
     }
     
@@ -1390,7 +1067,7 @@ void SetIOData() {
     int i, j, k, row_start;
 
     // 初期化
-    for (i = 0; i < 12; i++) {
+    for (i = 0; i < IOCount; i++) {
         k = 0;
         for (j = 0; j < 16; j++) {
             row_start = (i * 16) + j;
@@ -1414,7 +1091,9 @@ void SetIOData() {
                     IOSetting[i].CommandType = g_read_io_data[row_start]; // コマンドNo
                     break;
                 default:
-                    IOSetting[i].OutputNo[j - 4] = g_read_io_data[row_start];
+                    if (j - 4 < IOCount) {
+                        IOSetting[i].OutputNo[j - 4] = g_read_io_data[row_start];
+                    }
                     break;
             }
             printf("%d", g_read_io_data[row_start]);
@@ -1933,7 +1612,7 @@ void Input_SW_Push(int gpio) {
     switch (SelectMode) {
     case SelectMode_Input:
         SelectInputNo = GPIO_InputNo_Macro[gpio - 2];
-        for (int i = 0; i < 12; i++) {
+        for (int i = 0; i < IOCount; i++) {
             DispPanel[i] = (SelectInputNo == i) ? '1' : '0';
         }
         IOSetting_Current = IOSetting[SelectInputNo];
@@ -1949,7 +1628,7 @@ void Input_SW_Push(int gpio) {
 
         break;
     case SelectMode_Output:
-        for (int i = 0; i < 12; i++) {
+        for (int i = 0; i < IOCount; i++) {
             if (i == (GPIO_InputNo_Macro[gpio - 2])) {
                 DispPanel[i] = (DispPanel[i] == '0') ? '1' : '0'; 
                 IOSetting_Current.OutputNo[i] = (DispPanel[i] == '0') ? 0 : 1;
@@ -1958,7 +1637,7 @@ void Input_SW_Push(int gpio) {
         DrawControlPanel(DispPanel);
         break;
     case SelectMode_Macro:
-        for (int i = 0; i < 12; i++) {
+        for (int i = 0; i < IOCount; i++) {
             if (i == (GPIO_InputNo_Macro[gpio - 2])) {
                 DispPanel[i] = (DispPanel[i] == '0') ? '1' : '0';
                 bit_set_u16(&MacroSettingBits[SelectInputNo][MacroFrame], i + 1, (DispPanel[i] != '0'));
@@ -2542,7 +2221,7 @@ DispPatternDef getcharPattern(char DispChar) {
     }
 }
 
-void DrawControlPanel(char InputState[12])
+void DrawControlPanel(char InputState[9])
 {
     int i;
     int row_pos = 2;
@@ -5430,22 +5109,4 @@ void SetCharPattern_symbol()
     DispPattern[99].pattern_foot[14] = 0x00;
     DispPattern[99].pattern_foot[15] = 0x00;
 
-}
-
-// TinyUSB HID callbacks ----------------------------------------------
-uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t* buffer, uint16_t reqlen) {
-    (void) instance;
-    (void) report_id;
-    (void) report_type;
-    (void) buffer;
-    (void) reqlen;
-    return 0;
-}
-
-void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const* buffer, uint16_t bufsize) {
-    (void) instance;
-    (void) report_id;
-    (void) report_type;
-    (void) buffer;
-    (void) bufsize;
 }
