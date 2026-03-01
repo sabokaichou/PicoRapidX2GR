@@ -49,11 +49,36 @@ static bool     s_led_manual_state         = false;
 // 初回の実データ書込みまで点滅を完全抑止
 static bool     s_led_suppress_until_write = true;
 
+// ---- Output label helpers -----------------------------------------------
+// GPIO番号 → OUTPUTラベル文字列
+static const char* gpio_to_output_label(uint8_t g) {
+    if (g == 18) return "A";
+    if (g == 17) return "B";
+    if (g == 16) return "C";
+    if (g == 28) return "RESET";
+    if (g == 27) return "START";
+    return "A"; // フォールバック
+}
+
+// OUTPUTラベル文字列 → GPIO番号 (不明なら0xFF=デフォルト使用)
+static uint8_t output_label_to_gpio(const char *label) {
+    if (label[0] == 'A' || label[0] == 'a') return 18;
+    if (label[0] == 'B' || label[0] == 'b') return 17;
+    if (label[0] == 'C' || label[0] == 'c') return 16;
+    // RESET / reset
+    if ((label[0] == 'R' || label[0] == 'r') &&
+        (label[1] == 'E' || label[1] == 'e')) return 28;
+    // START / start
+    if ((label[0] == 'S' || label[0] == 's') &&
+        (label[1] == 'T' || label[1] == 't')) return 27;
+    return 0xFF; // 不明
+}
+
 // ---- Validation and deletion helpers --------------------------------------
-// GR button config header check: "SLOT,MODE,GPIO,RAPID_OFF" が含まれること
+// GR button config header check: "INPUT,OUTPUT,MODE,RAPID" が含まれること
 static bool has_expected_header_n(const char *data, size_t len) {
     if (!data || len == 0) return false;
-    const char *needle = "SLOT,MODE,GPIO,RAPID_OFF";
+    const char *needle = "INPUT,OUTPUT,MODE,RAPID";
     size_t n = strlen(needle);
     for (size_t i = 0; i + n <= len; i++) {
         if (memcmp(data + i, needle, n) == 0) return true;
@@ -63,7 +88,7 @@ static bool has_expected_header_n(const char *data, size_t len) {
 
 // GR button config データ行の検証:
 //   - 先頭が 'A'〜'F' または 'a'〜'f'
-//   - カンマ区切り4フィールド (SLOT,MODE,GPIO,RAPID_OFF)
+//   - カンマ区切り4フィールド (INPUT,OUTPUT,MODE,RAPID)
 static bool validate_settings_lines_n(const char *data, size_t len) {
     if (!data || len == 0) return false;
     const char *p = data;
@@ -225,11 +250,12 @@ static void build_fat12_image(void) {
     // ヘッダコメント
     pos += snprintf(text + pos, DISK_SECTOR_SIZE - pos,
         "# PicoRapidX2GR Button Configuration\r\n"
-        "# SLOT: A=TOP_L  B=TOP_M  C=TOP_R  D=BTM_L  E=BTM_M  F=BTM_R\r\n"
-        "# MODE: 0=DISABLED  1=HOLD  2=RAPID_ROTARY  3=RAPID_FIXED\r\n"
-        "# GPIO: output GPIO number (0-28)\r\n"
-        "# RAPID_OFF: off-frames for RAPID_FIXED mode (1-6)\r\n"
-        "# SLOT,MODE,GPIO,RAPID_OFF\r\n"
+        "# INPUT : A=TOP_L  B=TOP_M  C=TOP_R  D=BTM_L  E=BTM_M  F=BTM_R\r\n"
+        "# OUTPUT: A=GP18   B=GP17   C=GP16   RESET=GP28  START=GP27\r\n"
+        "# MODE  : 0=DISABLED  1=HOLD  2=RAPID_ROTARY  3=RAPID_FIXED\r\n"
+        "# RAPID : 1=8.6/s  2=10/s  3=12/s  4=15/s  5=20/s  6=30/s\r\n"
+        "#         (RAPID_ROTARY uses rotary switch, RAPID field ignored)\r\n"
+        "# INPUT,OUTPUT,MODE,RAPID\r\n"
         "#\r\n");
 
     for (int i = 0; i < 6 && pos < DISK_SECTOR_SIZE - 40; i++) {
@@ -245,9 +271,12 @@ static void build_fat12_image(void) {
             if (gpio_pin > 28  || gpio_pin  == 0xFF) gpio_pin  = btn_default[i].gpio;
             if (rapid_off == 0 || rapid_off  > 6 || rapid_off == 0xFF) rapid_off = 1;
         }
+        // rapid_off(1-6) → RAPID段階(1-6): RAPID = 7 - rapid_off
+        int rapid_level = 7 - (int)rapid_off;  // 1→6(8.6/s)...6→1(30/s) の逆
+        if (rapid_level < 1 || rapid_level > 6) rapid_level = 3;
         pos += snprintf(text + pos, DISK_SECTOR_SIZE - pos,
-            "%c,%d,%d,%d  # %s\r\n",
-            'A' + i, mode, gpio_pin, rapid_off, slot_names[i]);
+            "%c,%s,%d,%d  # %s\r\n",
+            'A' + i, gpio_to_output_label(gpio_pin), mode, rapid_level, slot_names[i]);
     }
 
     uint32_t fsize = (uint32_t)pos;
@@ -284,7 +313,11 @@ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void *buff
 }
 
 // GRボタン設定CSVをパースしてフラッシュに書き込む
-// 形式: SLOT,MODE,GPIO,RAPID_OFF  (行末の #コメントは無視)
+// 形式: INPUT,OUTPUT,MODE,RAPID  (行末の #コメントは無視)
+//   INPUT : A-F (スロット0-5)
+//   OUTPUT: A(GP18) B(GP17) C(GP16) RESET(GP28) START(GP27)
+//   MODE  : 0=DISABLED 1=HOLD 2=RAPID_ROTARY 3=RAPID_FIXED
+//   RAPID : 1(8.6/s)〜6(30/s) → rapid_off = 7 - RAPID
 static void parse_settings_csv_n(const char *csv_data, size_t csv_len) {
     // デフォルト値テーブル
     static const struct { uint8_t mode; uint8_t gpio; uint8_t rapid_off; } btn_default[6] = {
@@ -331,47 +364,55 @@ static void parse_settings_csv_n(const char *csv_data, size_t csv_len) {
         buf[line_len] = '\0';
         for (int k = 0; buf[k]; k++) { if (buf[k] == '#') { buf[k] = '\0'; break; } }
 
-        // SLOT(A-F)をインデックス(0-5)に変換してから残り3フィールドをパース
+        // INPUT(A-F) をスロット番号(0-5)に変換
         char *s = buf;
         char *f0 = s; while (*f0 == ' ' || *f0 == '\t') f0++;
         char slot_char = f0[0];
         int slot = (slot_char >= 'a') ? (slot_char - 'a') : (slot_char - 'A');
+        if (slot < 0 || slot > 5) continue;
         // 最初のカンマまで進める
         while (*s && *s != ',') s++;
         if (*s != ',') continue;
         s++; // カンマの次へ
 
-        // 残り3フィールド (MODE,GPIO,RAPID_OFF) をパース
-        int values[3] = {-1, -1, -1};
-        int value_count = 0;
-        char *field = s;
-        for (int k = 0; s[k] != '\0' && value_count < 3; k++) {
+        // 4フィールドを文字列のまま分割: OUTPUT, MODE, RAPID
+        char *fields[3] = {NULL, NULL, NULL};
+        int field_count = 0;
+        char *fp_field = s;
+        for (int k = 0; s[k] != '\0' && field_count < 3; k++) {
             if (s[k] == ',') {
                 s[k] = '\0';
-                char *f = field; while (*f == ' ' || *f == '\t') f++;
-                values[value_count++] = atoi(f);
-                field = &s[k + 1];
+                char *f = fp_field; while (*f == ' ' || *f == '\t') f++;
+                fields[field_count++] = f;
+                fp_field = &s[k + 1];
             }
         }
         // 最後のフィールド
-        if (value_count < 3) {
-            char *f = field; while (*f == ' ' || *f == '\t') f++;
-            values[value_count++] = atoi(f);
+        if (field_count < 3) {
+            char *f = fp_field; while (*f == ' ' || *f == '\t') f++;
+            fields[field_count++] = f;
         }
-        if (value_count < 3) continue;
+        if (field_count < 3 || !fields[0] || !fields[1] || !fields[2]) continue;
 
-        int mode      = values[0];
-        int gpio_pin  = values[1];
-        int rapid_off = values[2];
+        // OUTPUT ラベル → GPIO番号
+        uint8_t gpio_pin = output_label_to_gpio(fields[0]);
+        if (gpio_pin == 0xFF) gpio_pin = btn_default[slot].gpio; // 不明はデフォルト
 
-        // 範囲チェック
-        if (slot < 0 || slot > 5) continue;
+        // MODE (0-3)
+        int mode = atoi(fields[1]);
         if (mode < 0 || mode > 3) mode = (int)btn_default[slot].mode;
-        if (gpio_pin < 0 || gpio_pin > 28) gpio_pin = (int)btn_default[slot].gpio;
-        if (rapid_off < 1 || rapid_off > 6) rapid_off = 1;
+
+        // RAPID 1-6 → rapid_off = 7 - RAPID
+        int rapid_level = atoi(fields[2]);
+        int rapid_off;
+        if (rapid_level >= 1 && rapid_level <= 6) {
+            rapid_off = 7 - rapid_level;  // 1→6, 2→5, 3→4, 4→3, 5→2, 6→1
+        } else {
+            rapid_off = (int)btn_default[slot].rapid_off;
+        }
 
         new_settings[slot * 3 + 0] = (uint8_t)mode;
-        new_settings[slot * 3 + 1] = (uint8_t)gpio_pin;
+        new_settings[slot * 3 + 1] = gpio_pin;
         new_settings[slot * 3 + 2] = (uint8_t)rapid_off;
     }
 
