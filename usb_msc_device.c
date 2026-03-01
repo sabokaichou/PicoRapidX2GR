@@ -19,6 +19,11 @@
 #define _GR_BTN_MODE_RAPID_ROTARY 2
 #define _GR_BTN_MODE_RAPID_FIXED  3
 
+// マクロ出力先の特殊値 (PicoRapidX2GR.c と同じ値)
+#define _GR_GPIO_MACRO_START       100
+#define _GR_GPIO_MACRO_RESET       101
+#define _GR_GPIO_MACRO_RESETSTART  102
+
 // Setting.txt のみの簡素なFAT12ディスク
 // セクタ構成:
 //   0   : ブートレコード
@@ -55,23 +60,25 @@ static const char* gpio_to_output_label(uint8_t g) {
     if (g == 18) return "A";
     if (g == 17) return "B";
     if (g == 16) return "C";
-    if (g == 27) return "START";
-    if (g == 99 || g == 28) return "RESET";  // 99=新形式, 28=旧形式互務
+    if (g == _GR_GPIO_MACRO_START)  return "START";
+    if (g == _GR_GPIO_MACRO_RESETSTART) return "RESETSTART";
+    if (g == _GR_GPIO_MACRO_RESET || g == 27 || g == 99 || g == 28) return "RESET";  // 27/99/28=旧互換
     return "A"; // フォールバック
 }
 
 // OUTPUTラベル文字列 → GPIO番号 (不明なら0xFF=デフォルト使用)
-// RESETは特殊値 99 として保存 (実際GPIO 28への変換はLoadButtonConfigで行う)
+// START=100, RESET=101, RESETSTART=102 をマクロ番号として保存
 static uint8_t output_label_to_gpio(const char *label) {
     if (label[0] == 'A' || label[0] == 'a') return 18;
     if (label[0] == 'B' || label[0] == 'b') return 17;
     if (label[0] == 'C' || label[0] == 'c') return 16;
+    // RESETSTART / resetstart (RESETより先に判定: 先頭6文字等しい)
+    if ((label[0]=='R'||label[0]=='r') && (label[1]=='E'||label[1]=='e') &&
+        (label[5]=='S'||label[5]=='s') && (label[6]=='T'||label[6]=='t')) return _GR_GPIO_MACRO_RESETSTART;
     // RESET / reset
-    if ((label[0] == 'R' || label[0] == 'r') &&
-        (label[1] == 'E' || label[1] == 'e')) return 99;
+    if ((label[0]=='R'||label[0]=='r') && (label[1]=='E'||label[1]=='e')) return _GR_GPIO_MACRO_RESET;
     // START / start
-    if ((label[0] == 'S' || label[0] == 's') &&
-        (label[1] == 'T' || label[1] == 't')) return 27;
+    if ((label[0]=='S'||label[0]=='s') && (label[1]=='T'||label[1]=='t')) return _GR_GPIO_MACRO_START;
     return 0xFF; // 不明
 }
 
@@ -252,7 +259,7 @@ static void build_fat12_image(void) {
     pos += snprintf(text + pos, DISK_SECTOR_SIZE - pos,
         "# PicoRapidX2GR Button Configuration\r\n"
         "# INPUT : A=TOP_L  B=TOP_M  C=TOP_R  D=BTM_L  E=BTM_M  F=BTM_R\r\n"
-        "# OUTPUT: A, B, C, START, RESET\r\n"
+        "# OUTPUT: A, B, C, START, RESET, RESETSTART\r\n"
         "# MODE  : 0=DISABLED  1=HOLD  2=RAPID_ROTARY  3=RAPID_FIXED\r\n"
         "# RAPID : 1=8.6/s  2=10/s  3=12/s  4=15/s  5=20/s  6=30/s\r\n"
         "#         (RAPID_ROTARY uses rotary switch, RAPID field ignored)\r\n"
@@ -269,7 +276,14 @@ static void build_fat12_image(void) {
             gpio_pin  = btn_default[i].gpio;
             rapid_off = btn_default[i].rapid_off;
         } else {
-            if (gpio_pin > 28  || gpio_pin  == 0xFF) gpio_pin  = btn_default[i].gpio;
+            // 合法値チェック: マクロ(100/101/102), A/B/C(18/17/16), 旧形式互換(27/28/99)
+            if (gpio_pin != _GR_GPIO_MACRO_START &&
+                gpio_pin != _GR_GPIO_MACRO_RESET &&
+                gpio_pin != _GR_GPIO_MACRO_RESETSTART &&
+                gpio_pin != 18 && gpio_pin != 17 && gpio_pin != 16 &&
+                gpio_pin != 27 && gpio_pin != 28 && gpio_pin != 99) {
+                gpio_pin = btn_default[i].gpio;
+            }
             if (rapid_off == 0 || rapid_off  > 6 || rapid_off == 0xFF) rapid_off = 1;
         }
         // rapid_off(1-6) → RAPID段階(1-6): RAPID = 7 - rapid_off
@@ -316,7 +330,7 @@ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void *buff
 // GRボタン設定CSVをパースしてフラッシュに書き込む
 // 形式: INPUT,OUTPUT,MODE,RAPID  (行末の #コメントは無視)
 //   INPUT : A-F (スロット0-5)
-//   OUTPUT: A(GP18) B(GP17) C(GP16) RESET(GP28) START(GP27)
+//   OUTPUT: A(GP18) B(GP17) C(GP16) START(100) RESET(101) RESETSTART(102)
 //   MODE  : 0=DISABLED 1=HOLD 2=RAPID_ROTARY 3=RAPID_FIXED
 //   RAPID : 1(8.6/s)〜6(30/s) → rapid_off = 7 - RAPID
 static void parse_settings_csv_n(const char *csv_data, size_t csv_len) {
@@ -396,13 +410,14 @@ static void parse_settings_csv_n(const char *csv_data, size_t csv_len) {
         if (field_count < 3 || !fields[0] || !fields[1] || !fields[2]) continue;
 
         // OUTPUT ラベル → GPIO番号
-        // (RESET=99, START=27, A=18, B=17, C=16)
+        // (START=100, RESET=101, RESETSTART=102, A=18, B=17, C=16)
         uint8_t gpio_pin = output_label_to_gpio(fields[0]);
         if (gpio_pin == 0xFF) gpio_pin = btn_default[slot].gpio; // 不明はデフォルト
-        // 合法値チェック: 99(RESET), 27(START), 28(RESET旧), 16/17/18(A/B/C)
-        if (gpio_pin != 99 && gpio_pin != 28 &&
-            gpio_pin != 27 && gpio_pin != 18 &&
-            gpio_pin != 17 && gpio_pin != 16) {
+        // 合法値チェック: マクロ(100/101/102), A/B/C(18/17/16)
+        if (gpio_pin != _GR_GPIO_MACRO_START &&
+            gpio_pin != _GR_GPIO_MACRO_RESET &&
+            gpio_pin != _GR_GPIO_MACRO_RESETSTART &&
+            gpio_pin != 18 && gpio_pin != 17 && gpio_pin != 16) {
             gpio_pin = btn_default[slot].gpio;
         }
 

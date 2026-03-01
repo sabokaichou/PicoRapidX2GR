@@ -176,6 +176,11 @@ static const uint8_t GR_RapidOffFrames[6] = {6, 5, 4, 3, 2, 1};
 #define GR_BTN_MODE_RAPID_ROTARY  2  // 連射(ロータリー速度使用)
 #define GR_BTN_MODE_RAPID_FIXED   3  // 連射(固定速度)
 
+// マクロ出力先の特殊値 (gpio フィールドで識別、実GPIOではない)
+#define GR_GPIO_MACRO_START       100  // STARTマクロ (GP27へ出力)
+#define GR_GPIO_MACRO_RESET       101  // RESETマクロ (GP28へ出力)
+#define GR_GPIO_MACRO_RESETSTART  102  // RESET+STARTマクロ (GP28+GP27へ出力)
+
 // ボタン設定構造体
 // フラッシュ(0x1C3000)レイアウト (18バイト):
 //   [0..2]  : スロット0 = TOP_L (mode, gpio, rapid_off)
@@ -604,10 +609,16 @@ void InitGPIO() {
     LoadButtonConfig();
     for (int i = 0; i < 6; i++) {
         if (GR_Btn_Config[i].mode != GR_BTN_MODE_DISABLED) {
-            gpio_init(GR_Btn_Config[i].gpio);
-            gpio_set_dir(GR_Btn_Config[i].gpio, GPIO_OUT);
-            gpio_put(GR_Btn_Config[i].gpio, 0);
-            gpio_set_drive_strength(GR_Btn_Config[i].gpio, GPIO_DRIVE_STRENGTH_2MA);
+            uint8_t g = GR_Btn_Config[i].gpio;
+            // マクロ出力先(GP27/GP28)はOutput_Pin_GRの初期化ループで既に設定済み
+            if (g != GR_GPIO_MACRO_START &&
+                g != GR_GPIO_MACRO_RESET &&
+                g != GR_GPIO_MACRO_RESETSTART) {
+                gpio_init(g);
+                gpio_set_dir(g, GPIO_OUT);
+                gpio_put(g, 0);
+                gpio_set_drive_strength(g, GPIO_DRIVE_STRENGTH_2MA);
+            }
         }
     }
 }
@@ -842,6 +853,20 @@ void GetInput_GR() {
     }
 }
 
+// GPIO番号またはマクロ番号に対してオン/オフを出力する
+static inline void gr_output_set(uint8_t gpio_val, bool on) {
+    if (gpio_val == GR_GPIO_MACRO_START) {
+        gpio_put(Output_Pin_GR[GR_OUT_START], on ? 1 : 0);
+    } else if (gpio_val == GR_GPIO_MACRO_RESET) {
+        gpio_put(Output_Pin_GR[GR_OUT_RESET], on ? 1 : 0);
+    } else if (gpio_val == GR_GPIO_MACRO_RESETSTART) {
+        gpio_put(Output_Pin_GR[GR_OUT_RESET], on ? 1 : 0);
+        gpio_put(Output_Pin_GR[GR_OUT_START], on ? 1 : 0);
+    } else {
+        gpio_put(gpio_val, on ? 1 : 0);
+    }
+}
+
 // 単一スロットのボタン出力処理ヘルパー
 static void ProcessButton_GR(int slot, bool pressed, uint8_t *counter) {
     const GR_ButtonConfig *cfg = &GR_Btn_Config[slot];
@@ -850,34 +875,34 @@ static void ProcessButton_GR(int slot, bool pressed, uint8_t *counter) {
             // 何もしない
             break;
         case GR_BTN_MODE_HOLD:
-            gpio_put(cfg->gpio, pressed ? 1 : 0);
+            gr_output_set(cfg->gpio, pressed);
             *counter = 0;
             break;
         case GR_BTN_MODE_RAPID_ROTARY:
             if (pressed) {
                 if (GR_CurrentRapidOff == 0) {
-                    gpio_put(cfg->gpio, 1);
+                    gr_output_set(cfg->gpio, true);
                 } else {
-                    gpio_put(cfg->gpio, (*counter == 0) ? 1 : 0);
+                    gr_output_set(cfg->gpio, *counter == 0);
                     (*counter)++;
                     if (*counter > GR_CurrentRapidOff) *counter = 0;
                 }
             } else {
-                gpio_put(cfg->gpio, 0);
+                gr_output_set(cfg->gpio, false);
                 *counter = 0;
             }
             break;
         case GR_BTN_MODE_RAPID_FIXED:
             if (pressed) {
                 if (cfg->rapid_off == 0) {
-                    gpio_put(cfg->gpio, 1);
+                    gr_output_set(cfg->gpio, true);
                 } else {
-                    gpio_put(cfg->gpio, (*counter == 0) ? 1 : 0);
+                    gr_output_set(cfg->gpio, *counter == 0);
                     (*counter)++;
                     if (*counter > cfg->rapid_off) *counter = 0;
                 }
             } else {
-                gpio_put(cfg->gpio, 0);
+                gr_output_set(cfg->gpio, false);
                 *counter = 0;
             }
             break;
@@ -1125,11 +1150,15 @@ void LoadButtonConfig() {
         if (mode > GR_BTN_MODE_RAPID_FIXED || mode == 0xFF) {
             GR_Btn_Config[i] = GR_Btn_Default[i];
         } else {
-            // 99はRESET(GP28)の特殊値、28は旧フォーマット互換
-            if (gpio_pin == 99 || gpio_pin == 28) {
-                gpio_pin = 28;  // 実際のGPIO番号に変換
-            } else if (gpio_pin != 27 && gpio_pin != 18 &&
-                       gpio_pin != 17 && gpio_pin != 16) {
+            // 旧フォーマット互換: 27(START)→100, 28/99(RESET)→101 に変換
+            if (gpio_pin == 27) {
+                gpio_pin = GR_GPIO_MACRO_START;
+            } else if (gpio_pin == 28 || gpio_pin == 99) {
+                gpio_pin = GR_GPIO_MACRO_RESET;
+            } else if (gpio_pin != 18 && gpio_pin != 17 && gpio_pin != 16 &&
+                       gpio_pin != GR_GPIO_MACRO_START &&
+                       gpio_pin != GR_GPIO_MACRO_RESET &&
+                       gpio_pin != GR_GPIO_MACRO_RESETSTART) {
                 gpio_pin = GR_Btn_Default[i].gpio;
             }
             if (rapid_off == 0 || rapid_off > 6 || rapid_off == 0xFF) rapid_off = 1;
