@@ -181,6 +181,30 @@ static const uint8_t GR_RapidOffFrames[6] = {6, 5, 4, 3, 2, 1};
 #define GR_GPIO_MACRO_RESET       101  // RESETマクロ (GP28へ出力)
 #define GR_GPIO_MACRO_RESETSTART  102  // RESET+STARTマクロ (GP28+GP27へ出力)
 
+// ---- プログラム埋め込みマクロシステム ----
+// MacroStep: outputs=0=待機, outputs=0xFFFF=終端マーカ, それ以外=出力ビット列
+typedef struct {
+    uint16_t outputs;  // 出力ビット (Output_Pin_GR[]インデックす対応)
+    uint8_t  frames;   // 保持/待機フレーム数
+} MacroStep;
+
+// 出力ビット定義 (Output_Pin_GR[] のインデックス照射)
+#define MOUT_RESET  (1u<<0)   // GP28 (index 0 = GR_OUT_RESET)
+#define MOUT_START  (1u<<1)   // GP27 (index 1 = GR_OUT_START)
+#define MOUT_UP     (1u<<2)   // GP26 (index 2)
+#define MOUT_DOWN   (1u<<3)   // GP22 (index 3)
+#define MOUT_LEFT   (1u<<4)   // GP21 (index 4)
+#define MOUT_RIGHT  (1u<<5)   // GP20 (index 5)
+#define MOUT_A      (1u<<6)   // GP18 (index 6)
+#define MOUT_B      (1u<<7)   // GP17 (index 7)
+#define MOUT_C      (1u<<8)   // GP16 (index 8)
+
+// マクロシーケンス記述ヘルパー
+#define MSTEP_OUT(b)      {(uint16_t)(b), 1}    // 出力 b を1フレーム
+#define MSTEP_HOLD(b, n)  {(uint16_t)(b), (n)}  // 出力 b をnフレーム
+#define MSTEP_WAIT(n)     {0x0000,        (n)}  // nフレーム何もしない
+#define MSTEP_END         {0xFFFF,        0}    // 終端マーカー
+
 // ボタン設定構造体
 // フラッシュ(0x1C3000)レイアウト (18バイト):
 //   [0..2]  : スロット0 = TOP_Left (mode, gpio, rapid_off)
@@ -202,9 +226,19 @@ GR_ButtonConfig GR_Btn_Config[6];  // [0]=TOP_Left [1]=TOP_Center [2]=TOP_Right 
 
 // GR入力状態 (スワップ適用後の論理スロット単位)
 static bool     GR_BtnState[6] = {false};  // [0..5] 各スロットの押下状態
+static bool     GR_BtnStatePrev[6] = {false}; // 前フレームの押下状態 (立ち上がりエッジ検出用)
 static uint32_t GR_ResetFrameCount = 0;
 static uint8_t  GR_CurrentRapidOff = 0;    // 現在のOFFフレーム数 (0=連射なし)
 static uint8_t  GR_RapidCnt[6] = {0};      // 各スロットの連射カウンタ
+
+// マクロ実行状態
+typedef struct {
+    const MacroStep *steps;   // 実行中シーケンス
+    uint8_t          step;    // 現在のステップインデックス
+    uint8_t          frame;   // 現ステップ内フレームカウンタ
+    bool             active;  // 実行中フラグ
+} GR_MacroRunState;
+static GR_MacroRunState GR_MacroState[6];  // 各スロットのマクロ実行状態
 
 // GPIO関連(設定)
 bool SettingMode = false;
@@ -867,9 +901,99 @@ static inline void gr_output_set(uint8_t gpio_val, bool on) {
     }
 }
 
+// ---- 埋め込みマクロシーケンス定義 ----
+// ここのシーケンスを編集してマクロ動作をカスタマイズすること。
+
+// STARTマクロ (GR_GPIO_MACRO_START=100)
+static const MacroStep GR_MacroSeq_Start[] = {
+    MSTEP_OUT(MOUT_START),  // START 1フレーム
+    MSTEP_WAIT(3),          // 3フレーム待機
+    MSTEP_END,
+};
+
+// RESETマクロ (GR_GPIO_MACRO_RESET=101)
+static const MacroStep GR_MacroSeq_Reset[] = {
+    MSTEP_OUT(MOUT_RESET),  // RESET 1フレーム
+    MSTEP_WAIT(3),          // 3フレーム待機
+    MSTEP_END,
+};
+
+// RESET+STARTマクロ (GR_GPIO_MACRO_RESETSTART=102)
+static const MacroStep GR_MacroSeq_ResetStart[] = {
+    MSTEP_HOLD(MOUT_RESET | MOUT_START, 3),  // RESET+START 同時押下 3フレーム
+    MSTEP_WAIT(3),                           // 3フレーム待機
+    MSTEP_END,
+};
+
+// マクロステップの出力ビットを Output_Pin_GR に適用する
+static void gr_macro_apply(uint16_t bits, bool on) {
+    for (int i = 0; i < 9; i++) {
+        if (bits & (1u << i)) {
+            gpio_put(Output_Pin_GR[i], on ? 1 : 0);
+        }
+    }
+}
+
+// スロットのマクロを開始する (実行中の場合は先頭から再スタート)
+static void gr_start_macro(int slot, uint8_t macro_type) {
+    const MacroStep *seq;
+    if      (macro_type == GR_GPIO_MACRO_START) seq = GR_MacroSeq_Start;
+    else if (macro_type == GR_GPIO_MACRO_RESET) seq = GR_MacroSeq_Reset;
+    else                                        seq = GR_MacroSeq_ResetStart;
+    GR_MacroState[slot].steps  = seq;
+    GR_MacroState[slot].step   = 0;
+    GR_MacroState[slot].frame  = 0;
+    GR_MacroState[slot].active = true;
+}
+
+// アクティブな全スロットのマクロを 1フレーム進める
+static void TickMacros_GR(void) {
+    for (int slot = 0; slot < 6; slot++) {
+        GR_MacroRunState *st = &GR_MacroState[slot];
+        if (!st->active) continue;
+
+        const MacroStep *cur = &st->steps[st->step];
+
+        // 終端チェック
+        if (cur->outputs == 0xFFFF) {
+            st->active = false;
+            continue;
+        }
+
+        // 出力ありステップ: GPIOをアサート
+        if (cur->outputs != 0) {
+            gr_macro_apply(cur->outputs, true);
+        }
+        // outputs==0（WAIT）のときは何もしない（前ステップ終了時に解除済み）
+
+        // フレームカウンタ更新
+        st->frame++;
+        if (st->frame >= cur->frames) {
+            st->frame = 0;
+            // 出力ステップ終了時に解除
+            if (cur->outputs != 0) {
+                gr_macro_apply(cur->outputs, false);
+            }
+            st->step++;
+        }
+    }
+}
+
 // 単一スロットのボタン出力処理ヘルパー
 static void ProcessButton_GR(int slot, bool pressed, uint8_t *counter) {
     const GR_ButtonConfig *cfg = &GR_Btn_Config[slot];
+
+    // マクロ出力先: 立ち上がりエッジでシングルショット起動 (モード問わず)
+    if (cfg->gpio == GR_GPIO_MACRO_START ||
+        cfg->gpio == GR_GPIO_MACRO_RESET ||
+        cfg->gpio == GR_GPIO_MACRO_RESETSTART) {
+        if (pressed && !GR_BtnStatePrev[slot]) {
+            gr_start_macro(slot, cfg->gpio);
+        }
+        *counter = 0;
+        return;
+    }
+
     switch (cfg->mode) {
         case GR_BTN_MODE_DISABLED:
             // 何もしない
@@ -915,9 +1039,17 @@ void InputExecute_GR() {
     gpio_put(Output_Pin_GR[GR_OUT_RESET],
              (GR_ResetFrameCount >= GR_RESET_HOLD_FRAMES) ? 1 : 0);
 
+    // アクティブなマクロを 1フレーム進める
+    TickMacros_GR();
+
     // 各スロットのボタンを設定に従って処理
     for (int i = 0; i < 6; i++) {
         ProcessButton_GR(i, GR_BtnState[i], &GR_RapidCnt[i]);
+    }
+
+    // 前フレームのボタン状態を保存 (立ち上がりエッジ検出用)
+    for (int i = 0; i < 6; i++) {
+        GR_BtnStatePrev[i] = GR_BtnState[i];
     }
 }
 
