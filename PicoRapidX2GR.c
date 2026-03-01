@@ -913,8 +913,9 @@ static const MacroStep GR_MacroSeq_Start[] = {
 
 // RESETマクロ (GR_GPIO_MACRO_RESET=101)
 static const MacroStep GR_MacroSeq_Reset[] = {
-    MSTEP_OUT(MOUT_RESET),  // RESET 1フレーム
-    MSTEP_WAIT(3),          // 3フレーム待機
+    MSTEP_OUT(MOUT_RESET),              // Frame 1: GP28 ON
+    MSTEP_WAIT(1),                      // Frame 2: 待機
+    MSTEP_OUT(MOUT_A | MOUT_B | MOUT_C), // Frame 3: GP18/17/16(A/B/C) ON
     MSTEP_END,
 };
 
