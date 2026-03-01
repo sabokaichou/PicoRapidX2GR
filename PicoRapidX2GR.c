@@ -934,12 +934,35 @@ static void gr_macro_apply(uint16_t bits, bool on) {
     }
 }
 
+// いずれかのスロットでマクロが実行中かどうか
+static inline bool GR_AnyMacroActive(void) {
+    for (int i = 0; i < 6; i++) {
+        if (GR_MacroState[i].active) return true;
+    }
+    return false;
+}
+
 // スロットのマクロを開始する (実行中の場合は先頭から再スタート)
 static void gr_start_macro(int slot, uint8_t macro_type) {
     const MacroStep *seq;
     if      (macro_type == GR_GPIO_MACRO_START) seq = GR_MacroSeq_Start;
     else if (macro_type == GR_GPIO_MACRO_RESET) seq = GR_MacroSeq_Reset;
     else                                        seq = GR_MacroSeq_ResetStart;
+
+    // 初回起動時 (他のマクロも未実行) はボタン入力出力を全クリア
+    if (!GR_AnyMacroActive()) {
+        for (int i = 0; i < 6; i++) {
+            const GR_ButtonConfig *cfg = &GR_Btn_Config[i];
+            if (cfg->mode != GR_BTN_MODE_DISABLED &&
+                cfg->gpio != GR_GPIO_MACRO_START &&
+                cfg->gpio != GR_GPIO_MACRO_RESET &&
+                cfg->gpio != GR_GPIO_MACRO_RESETSTART) {
+                gr_output_set(cfg->gpio, false);
+            }
+            GR_RapidCnt[i] = 0;
+        }
+    }
+
     GR_MacroState[slot].steps  = seq;
     GR_MacroState[slot].step   = 0;
     GR_MacroState[slot].frame  = 0;
@@ -1042,9 +1065,11 @@ void InputExecute_GR() {
     // アクティブなマクロを 1フレーム進める
     TickMacros_GR();
 
-    // 各スロットのボタンを設定に従って処理
-    for (int i = 0; i < 6; i++) {
-        ProcessButton_GR(i, GR_BtnState[i], &GR_RapidCnt[i]);
+    // マクロ実行中は再押下・他の入力をすべて無視する
+    if (!GR_AnyMacroActive()) {
+        for (int i = 0; i < 6; i++) {
+            ProcessButton_GR(i, GR_BtnState[i], &GR_RapidCnt[i]);
+        }
     }
 
     // 前フレームのボタン状態を保存 (立ち上がりエッジ検出用)
