@@ -250,7 +250,7 @@ static void build_fat12_image(void) {
         {_GR_BTN_MODE_HOLD,         16, 1},
     };
     const char *slot_names[6] = {
-        "TOP_L", "TOP_M", "TOP_R", "BTM_L", "BTM_M", "BTM_R"
+        "TOP_Left", "TOP_Center", "TOP_Right", "BTM_Left", "BTM_Center", "BTM_Right"
     };
     // フラッシュから現在の設定を読む
     const uint8_t *fp = (const uint8_t *)(XIP_BASE + FLASH_ADDR_BTN_SETTING);
@@ -258,7 +258,7 @@ static void build_fat12_image(void) {
     // ヘッダコメント
     pos += snprintf(text + pos, DISK_SECTOR_SIZE - pos,
         "# PicoRapidX2GR Button Configuration\r\n"
-        "# INPUT : A=TOP_L  B=TOP_M  C=TOP_R  D=BTM_L  E=BTM_M  F=BTM_R\r\n"
+        "# INPUT : A=TOP_Left  B=TOP_Center  C=TOP_Right  D=BTM_Left  E=BTM_Center  F=BTM_Right\r\n"
         "# OUTPUT: A, B, C, START, RESET, RESETSTART\r\n"
         "# MODE  : 0=DISABLED  1=HOLD  2=RAPID_ROTARY  3=RAPID_FIXED\r\n"
         "# RAPID : 1=8.6/s  2=10/s  3=12/s  4=15/s  5=20/s  6=30/s\r\n"

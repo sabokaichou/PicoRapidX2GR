@@ -183,12 +183,12 @@ static const uint8_t GR_RapidOffFrames[6] = {6, 5, 4, 3, 2, 1};
 
 // ボタン設定構造体
 // フラッシュ(0x1C3000)レイアウト (18バイト):
-//   [0..2]  : スロット0 = TOP_L (mode, gpio, rapid_off)
-//   [3..5]  : スロット1 = TOP_M
-//   [6..8]  : スロット2 = TOP_R
-//   [9..11] : スロット3 = BTM_L
-//   [12..14]: スロット4 = BTM_M
-//   [15..17]: スロット5 = BTM_R
+//   [0..2]  : スロット0 = TOP_Left (mode, gpio, rapid_off)
+//   [3..5]  : スロット1 = TOP_Center
+//   [6..8]  : スロット2 = TOP_Right
+//   [9..11] : スロット3 = BTM_Left
+//   [12..14]: スロット4 = BTM_Center
+//   [15..17]: スロット5 = BTM_Right
 // デフォルト (未初期化=0xFF の場合):
 //   slot0=HOLD/GP18, slot1=HOLD/GP17, slot2=HOLD/GP16
 //   slot3=RAPID_ROTARY/GP18, slot4=HOLD/GP17, slot5=HOLD/GP16
@@ -198,7 +198,7 @@ typedef struct {
     uint8_t rapid_off;  // OFFフレーム数 (1-6, RAPID_FIXED時のみ使用)
 } GR_ButtonConfig;
 
-GR_ButtonConfig GR_Btn_Config[6];  // [0]=TOP_L [1]=TOP_M [2]=TOP_R [3]=BTM_L [4]=BTM_M [5]=BTM_R
+GR_ButtonConfig GR_Btn_Config[6];  // [0]=TOP_Left [1]=TOP_Center [2]=TOP_Right [3]=BTM_Left [4]=BTM_Center [5]=BTM_Right
 
 // GR入力状態 (スワップ適用後の論理スロット単位)
 static bool     GR_BtnState[6] = {false};  // [0..5] 各スロットの押下状態
@@ -1126,14 +1126,14 @@ static void save_io_setting_to_flash(uint32_t save_address, uint8_t *save_data, 
 //   [0] E mode, [1] E gpio, [2] E rapid_off
 //   [3] F mode, [4] F gpio, [5] F rapid_off
 // ボタン設定のデフォルト値
-// スロット: 0=TOP_L, 1=TOP_M, 2=TOP_R, 3=BTM_L, 4=BTM_M, 5=BTM_R
+// スロット: 0=TOP_Left, 1=TOP_Center, 2=TOP_Right, 3=BTM_Left, 4=BTM_Center, 5=BTM_Right
 static const GR_ButtonConfig GR_Btn_Default[6] = {
-    {GR_BTN_MODE_HOLD,         18, 1},  // slot0: TOP_L → GP18 ホールド
-    {GR_BTN_MODE_HOLD,         17, 1},  // slot1: TOP_M → GP17 ホールド
-    {GR_BTN_MODE_HOLD,         16, 1},  // slot2: TOP_R → GP16 ホールド
-    {GR_BTN_MODE_RAPID_ROTARY, 18, 1},  // slot3: BTM_L → GP18 連射(ロータリー)
-    {GR_BTN_MODE_HOLD,         17, 1},  // slot4: BTM_M → GP17 ホールド
-    {GR_BTN_MODE_HOLD,         16, 1},  // slot5: BTM_R → GP16 ホールド
+    {GR_BTN_MODE_HOLD,         18, 1},  // slot0: TOP_Left  → GP18 ホールド
+    {GR_BTN_MODE_HOLD,         17, 1},  // slot1: TOP_Center → GP17 ホールド
+    {GR_BTN_MODE_HOLD,         16, 1},  // slot2: TOP_Right → GP16 ホールド
+    {GR_BTN_MODE_RAPID_ROTARY, 18, 1},  // slot3: BTM_Left  → GP18 連射(ロータリー)
+    {GR_BTN_MODE_HOLD,         17, 1},  // slot4: BTM_Center → GP17 ホールド
+    {GR_BTN_MODE_HOLD,         16, 1},  // slot5: BTM_Right → GP16 ホールド
 };
 
 // ボタン設定をフラッシュから読み込む
