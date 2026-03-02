@@ -13,7 +13,7 @@
 #include "vsync_separator.pio.h"
 
 // ピン定義
-#define CSYNC_INPUT_PIN 28      // 複合同期信号入力（GP28に変更）
+#define CSYNC_INPUT_PIN 2      // 複合同期信号入力（GP2に変更）
 
 // デフォルト出力ピン（初期化時に使用）
 static const uint8_t DEFAULT_OUTPUT_PINS[] = {
