@@ -18,6 +18,8 @@ static inline void csync_measure_program_init(PIO pio, uint sm, uint offset, uin
     pio_sm_config c = csync_measure_program_get_default_config(offset);
     
     // 入力ピン設定（CSYNC_INPUT_PINのみ）
+    // GPIO functionをGPIO_FUNC_PIO0に設定（これをしないとPIOがピンを読めない）
+    pio_gpio_init(pio, pin);
     sm_config_set_in_pins(&c, pin);
     
     // シフト方向設定（左シフト: pin値がビット0に入る → data & 1 で正しく読める）

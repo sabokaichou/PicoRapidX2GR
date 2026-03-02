@@ -325,7 +325,7 @@ void SetBoardMode() {
 // 入力・設定側初期化
 void InitGPIO() {
     // 使用GPIOを標準SIOモードにリセット
-    gpio_set_function(2,  GPIO_FUNC_SIO);  // GP02: CSync入力
+    gpio_set_function(2,  GPIO_FUNC_SIO);  // GP02: vsync_separator_init内でPIO0に設定される (初期状態のみSIO)
     gpio_set_function(26, GPIO_FUNC_SIO);  // GP26: 上 (出力)
     gpio_set_function(27, GPIO_FUNC_SIO);  // GP27: スタート (出力)
     gpio_set_function(28, GPIO_FUNC_SIO);  // GP28: リセット (出力)
