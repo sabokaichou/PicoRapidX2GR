@@ -281,26 +281,26 @@ int main() {
     // ボード設定の読込
     SetBoardMode();
 
-    // VBUS検出（GPIO24）でUSB接続を判定
-    gpio_init(VBUS_PIN);
-    gpio_set_dir(VBUS_PIN, GPIO_IN);
-    busy_wait_ms(5);  // 安定化待ち
-    UsbConnected = gpio_get(VBUS_PIN);
+    // // VBUS検出（GPIO24）でUSB接続を判定
+    // gpio_init(VBUS_PIN);
+    // gpio_set_dir(VBUS_PIN, GPIO_IN);
+    // busy_wait_ms(5);  // 安定化待ち
+    // UsbConnected = gpio_get(VBUS_PIN);
 
-    if (UsbConnected) {
-        // === USB接続モード: MSCデバイスとして動作 ===
-        InitGPIO();
+    // if (UsbConnected) {
+    //     // === USB接続モード: MSCデバイスとして動作 ===
+    //     InitGPIO();
 
-        // MSC初期化
-        usb_msc_start();
+    //     // MSC初期化
+    //     usb_msc_start();
 
-        // MSCメインループ
-        while (true) {
-            tud_task();
-            usb_msc_task();
-            sleep_ms(1);
-        }
-    }
+    //     // MSCメインループ
+    //     while (true) {
+    //         tud_task();
+    //         usb_msc_task();
+    //         sleep_ms(1);
+    //     }
+    // }
         
     // === USB未接続モード: VSync検出 + 連射 ===
     InitGPIO();
