@@ -281,26 +281,26 @@ int main() {
     // ボード設定の読込
     SetBoardMode();
 
-    // // VBUS検出（GPIO24）でUSB接続を判定
-    // gpio_init(VBUS_PIN);
-    // gpio_set_dir(VBUS_PIN, GPIO_IN);
-    // busy_wait_ms(5);  // 安定化待ち
-    // UsbConnected = gpio_get(VBUS_PIN);
+    // VBUS検出（GPIO24）でUSB接続を判定
+    gpio_init(VBUS_PIN);
+    gpio_set_dir(VBUS_PIN, GPIO_IN);
+    busy_wait_ms(5);  // 安定化待ち
+    UsbConnected = gpio_get(VBUS_PIN);
 
-    // if (UsbConnected) {
-    //     // === USB接続モード: MSCデバイスとして動作 ===
-    //     InitGPIO();
+    if (UsbConnected) {
+        // === USB接続モード: MSCデバイスとして動作 ===
+        InitGPIO();
 
-    //     // MSC初期化
-    //     usb_msc_start();
+        // MSC初期化
+        usb_msc_start();
 
-    //     // MSCメインループ
-    //     while (true) {
-    //         tud_task();
-    //         usb_msc_task();
-    //         sleep_ms(1);
-    //     }
-    // }
+        // MSCメインループ
+        while (true) {
+            tud_task();
+            usb_msc_task();
+            sleep_ms(1);
+        }
+    }
         
     // === USB未接続モード: VSync検出 + 連射 ===
     InitGPIO();
@@ -325,7 +325,6 @@ void SetBoardMode() {
 // 入力・設定側初期化
 void InitGPIO() {
     // 使用GPIOを標準SIOモードにリセット
-    gpio_set_function(2,  GPIO_FUNC_SIO);  // GP02: vsync_separator_init内でPIO0に設定される (初期状態のみSIO)
     gpio_set_function(26, GPIO_FUNC_SIO);  // GP26: 上 (出力)
     gpio_set_function(27, GPIO_FUNC_SIO);  // GP27: スタート (出力)
     gpio_set_function(28, GPIO_FUNC_SIO);  // GP28: リセット (出力)
@@ -360,6 +359,8 @@ void InitGPIO() {
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_set_drive_strength(LED_PIN, GPIO_DRIVE_STRENGTH_2MA);
+
+    gpio_put(LED_PIN, 1); // 初期状態でLED ON（VSync検出待ち）
 
     // ボタン設定をフラッシュから読み込み、対応出力GPIOを初期化
     LoadButtonConfig();
