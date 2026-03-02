@@ -659,10 +659,10 @@ void InitGPIO() {
 
 // VSync検出コールバック
 static void vsync_callback(void) {
-    // LED点滅
-    static bool led_state = false;
-    led_state = !led_state;
-    gpio_put(LED_PIN, led_state);
+    // VSync検出ごとに1ms点灯→消灯（1フレームに1回点滅）
+    gpio_put(LED_PIN, 1);
+    busy_wait_us(1000);
+    gpio_put(LED_PIN, 0);
 
     // GR入力取得 → 出力処理
     GetInput_GR();
