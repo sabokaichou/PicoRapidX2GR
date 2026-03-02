@@ -111,29 +111,6 @@ void vsync_separator_init_with_callback(void (*callback)(void)) {
     // PIOプログラムロード
     uint offset = pio_add_program(pio, &csync_measure_program);
     csync_measure_program_init(pio, sm, offset, CSYNC_INPUT_PIN);
-    
-    printf("V-Sync Separator initialized (with transistor buffer circuit)\n");
-    printf("C-Sync Input: GP%d\n", CSYNC_INPUT_PIN);
-    printf("Initial pin state: %d\n", gpio_get(CSYNC_INPUT_PIN));
-    printf("Output Pins:\n");
-    for (uint8_t i = 0; i < output_pin_count; i++) {
-        const char* pattern_name;
-        switch(output_patterns[i]) {
-            case OUTPUT_ALWAYS: pattern_name = "ALWAYS(60Hz)"; break;
-            case OUTPUT_ODD: pattern_name = "ODD(30Hz)"; break;
-            case OUTPUT_EVEN: pattern_name = "EVEN(30Hz)"; break;
-            case OUTPUT_QUARTER_01: pattern_name = "QUARTER_01(15Hz)"; break;
-            case OUTPUT_QUARTER_23: pattern_name = "QUARTER_23(15Hz)"; break;
-            case OUTPUT_2ON_1OFF: pattern_name = "2ON_1OFF(40Hz)"; break;
-            case OUTPUT_1ON_2OFF: pattern_name = "1ON_2OFF(20Hz)"; break;
-            case OUTPUT_1ON_3OFF: pattern_name = "1ON_3OFF(15Hz)"; break;
-            case OUTPUT_1ON_4OFF: pattern_name = "1ON_4OFF(12Hz)"; break;
-            case OUTPUT_1ON_5OFF: pattern_name = "1ON_5OFF(10Hz)"; break;
-            case OUTPUT_1ON_6OFF: pattern_name = "1ON_6OFF(8.6Hz)"; break;
-            default: pattern_name = "UNKNOWN"; break;
-        }
-        printf("  GP%d: %s\n", output_pins[i], pattern_name);
-    }
 }
 
 /*

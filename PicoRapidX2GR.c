@@ -307,6 +307,7 @@ int main() {
 
     // VSync分離器初期化（コールバック登録）
     vsync_separator_init_with_callback(vsync_callback);
+    gpio_put(LED_PIN, 1); // 初期状態でLED ON（VSync検出待ち）
     
     // メインループ: VSync検出タスク実行
     while (true) {
@@ -376,8 +377,6 @@ void InitGPIO() {
             }
         }
     }
-    gpio_put(LED_PIN, 1); // 初期状態でLED ON（VSync検出待ち）
-
 }
 
 // VSync検出コールバック
