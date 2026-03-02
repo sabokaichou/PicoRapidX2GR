@@ -17,11 +17,12 @@
 static inline void csync_measure_program_init(PIO pio, uint sm, uint offset, uint pin) {
     pio_sm_config c = csync_measure_program_get_default_config(offset);
     
-    // 入力ピン設定（GP28のみ）
+    // 入力ピン設定（CSYNC_INPUT_PINのみ）
     sm_config_set_in_pins(&c, pin);
     
-    // シフト方向設定（1ビットだけ右シフト）
-    sm_config_set_in_shift(&c, false, false, 32);
+    // シフト方向設定（左シフト: pin値がビット0に入る → data & 1 で正しく読める）
+    // 右シフト(false)だとpin値がビット31に入り data & 1 が常に0になるバグあり
+    sm_config_set_in_shift(&c, true, false, 32);
     
     // クロック設定 (125MHz → 1MHz = 1μs分解能)
     sm_config_set_clkdiv(&c, 125.0f);
