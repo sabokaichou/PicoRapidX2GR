@@ -360,8 +360,6 @@ void InitGPIO() {
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_set_drive_strength(LED_PIN, GPIO_DRIVE_STRENGTH_2MA);
 
-    gpio_put(LED_PIN, 1); // 初期状態でLED ON（VSync検出待ち）
-
     // ボタン設定をフラッシュから読み込み、対応出力GPIOを初期化
     LoadButtonConfig();
     for (int i = 0; i < 6; i++) {
@@ -378,6 +376,8 @@ void InitGPIO() {
             }
         }
     }
+    gpio_put(LED_PIN, 1); // 初期状態でLED ON（VSync検出待ち）
+
 }
 
 // VSync検出コールバック
