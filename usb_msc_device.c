@@ -30,9 +30,11 @@
 //   1   : FAT1
 //   2   : FAT2
 //   3   : ルートディレクトリ (1セクタ = 16エントリ)
-//   4   : Setting.txt データ (クラスタ2)
+//   4   : Setting.txt データ セクタ1 (クラスタ2)
+//   5   : Setting.txt データ セクタ2 (クラスタ3)
 #define DISK_SECTOR_SIZE  512
-#define DISK_SECTOR_COUNT 8
+#define DISK_SECTOR_COUNT 9
+#define DATA_SECTOR_COUNT 2   // Setting.txtのデータセクタ数
 #define ROOT_DIR_SECTOR   3
 #define DATA_START_SECTOR 4
 
@@ -134,11 +136,11 @@ static void delete_setting_file_from_ramdisk(void) {
     // ルートエントリを削除扱いに
     uint8_t *root = ram_disk + DISK_SECTOR_SIZE * ROOT_DIR_SECTOR;
     root[0] = 0xE5; // deleted mark
-    // FATのクラスタ2を解放
+    // FATのクラスタ2・3を解放
     uint8_t *fat1 = ram_disk + DISK_SECTOR_SIZE * 1;
-    uint8_t *fat2 = ram_disk + DISK_SECTOR_SIZE * 3;
-    fat1[3] = 0x00; fat1[4] = 0x00;
-    fat2[3] = 0x00; fat2[4] = 0x00;
+    uint8_t *fat2 = ram_disk + DISK_SECTOR_SIZE * 2;
+    fat1[3] = 0x00; fat1[4] = 0x00; fat1[5] = 0x00;
+    fat2[3] = 0x00; fat2[4] = 0x00; fat2[5] = 0x00;
     // ファイルサイズも0に
     memset(root + 28, 0, 4);
 }
@@ -223,8 +225,8 @@ static void build_fat12_image(void) {
     // ---- FAT1 (セクタ1) ----
     uint8_t *fat1 = ram_disk + DISK_SECTOR_SIZE * 1;
     fat1[0] = 0xF8; fat1[1] = 0xFF; fat1[2] = 0xFF;
-    // クラスタ2 = Setting.txt (EOC = 0xFFF)
-    fat1[3] = 0xFF; fat1[4] = (fat1[4] & 0xF0) | 0x0F;
+    // クラスタ2 → クラスタ3 (0x003), クラスタ3 = EOC (0xFFF)
+    fat1[3] = 0x03; fat1[4] = 0xF0; fat1[5] = 0xFF;
 
     // ---- FAT2 (セクタ2) ----
     memcpy(ram_disk + DISK_SECTOR_SIZE * 2, fat1, DISK_SECTOR_SIZE);
@@ -235,10 +237,11 @@ static void build_fat12_image(void) {
     root[11] = 0x20;
     uint16_t sc = 2; memcpy(root + 26, &sc, 2);
 
-    // ---- Setting.txt データ (セクタ4) / GRボタン設定 ----
+    // ---- Setting.txt データ (セクタ4-5, 1024バイト) / GRボタン設定 ----
     char *text = (char *)(ram_disk + DISK_SECTOR_SIZE * DATA_START_SECTOR);
-    memset(text, 0, DISK_SECTOR_SIZE);
+    memset(text, 0, DISK_SECTOR_SIZE * DATA_SECTOR_COUNT);
     int pos = 0;
+    const int text_buf_size = DISK_SECTOR_SIZE * DATA_SECTOR_COUNT;
 
     // デフォルト値テーブル (LoadButtonConfig と同じ)
     static const struct { uint8_t mode; uint8_t gpio; uint8_t rapid_off; } btn_default[6] = {
@@ -256,7 +259,7 @@ static void build_fat12_image(void) {
     const uint8_t *fp = (const uint8_t *)(XIP_BASE + FLASH_ADDR_BTN_SETTING);
 
     // ヘッダコメント
-    pos += snprintf(text + pos, DISK_SECTOR_SIZE - pos,
+    pos += snprintf(text + pos, text_buf_size - pos,
         "# PicoRapidX2GR Button Configuration\r\n"
         "# INPUT : A=TOP_Left  B=TOP_Center  C=TOP_Right  D=BTM_Left  E=BTM_Center  F=BTM_Right\r\n"
         "# OUTPUT: A, B, C, START, RESET, RESETSTART\r\n"
@@ -266,7 +269,7 @@ static void build_fat12_image(void) {
         "# INPUT,OUTPUT,MODE,RAPID\r\n"
         "#\r\n");
 
-    for (int i = 0; i < 6 && pos < DISK_SECTOR_SIZE - 40; i++) {
+    for (int i = 0; i < 6 && pos < text_buf_size - 40; i++) {
         uint8_t mode      = fp[i * 3 + 0];
         uint8_t gpio_pin  = fp[i * 3 + 1];
         uint8_t rapid_off = fp[i * 3 + 2];
@@ -289,7 +292,7 @@ static void build_fat12_image(void) {
         // rapid_off(1-6) → RAPID段階(1-6): RAPID = 7 - rapid_off
         int rapid_level = 7 - (int)rapid_off;  // 1→6(8.6/s)...6→1(30/s) の逆
         if (rapid_level < 1 || rapid_level > 6) rapid_level = 3;
-        pos += snprintf(text + pos, DISK_SECTOR_SIZE - pos,
+        pos += snprintf(text + pos, text_buf_size - pos,
             "%c,%s,%d,%d  # %s\r\n",
             'A' + i, gpio_to_output_label(gpio_pin), mode, rapid_level, slot_names[i]);
     }
@@ -465,8 +468,8 @@ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t *
         }
     }
 
-    // Setting.txt のデータセクタ書込み (セクタ4)
-    if (lba == DATA_START_SECTOR) {
+    // Setting.txt のデータセクタ書込み (セクタ4-5)
+    if (lba == DATA_START_SECTOR || lba == DATA_START_SECTOR + 1) {
         if (!s_led_blinking) {
             s_post_blink_active = false;
             s_post_blink_remaining_toggles = 0;
@@ -477,7 +480,7 @@ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t *
             s_write_processed = false;
             s_write_len = 0;
             s_preseeded_buffer = false;
-            // 既存内容をプリシード
+            // 既存内容をプリシード (2セクタ分)
             uint32_t preload_len = s_file_size_hint;
             if (preload_len == 0 || preload_len > sizeof(s_write_buffer)) preload_len = sizeof(s_write_buffer);
             memcpy(s_write_buffer, ram_disk + DISK_SECTOR_SIZE * DATA_START_SECTOR, preload_len);
@@ -485,7 +488,9 @@ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t *
             s_preseeded_buffer = true;
         }
         s_last_write_ms = to_ms_since_boot(get_absolute_time());
-        uint32_t pos = offset;
+        // lba==DATA_START_SECTORの時は先頭512B、lba==DATA_START_SECTOR+1の時は後半512B
+        uint32_t buf_base = (lba - DATA_START_SECTOR) * DISK_SECTOR_SIZE;
+        uint32_t pos = buf_base + offset;
         if (pos < sizeof(s_write_buffer)) {
             uint32_t cpy = bufsize;
             if (pos + cpy > sizeof(s_write_buffer)) cpy = sizeof(s_write_buffer) - pos;
